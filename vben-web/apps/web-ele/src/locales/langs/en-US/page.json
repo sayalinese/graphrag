@@ -1,0 +1,30 @@
+{
+  "auth": {
+    "login": "Login",
+    "register": "Register",
+    "codeLogin": "Code Login",
+    "qrcodeLogin": "Qr Code Login",
+    "forgetPassword": "Forget Password"
+  },
+  "dashboard": {
+    "title": "Dashboard",
+    "analytics": "Analytics",
+    "workspace": "Workspace"
+  },
+  "chat": {
+    "title": "AI Chat"
+  },
+  "kb": {
+    "title": "Knowledge Base",
+    "chat": "KB Chat",
+    "management": "KB Management",
+    "character": "AI Characters",
+    "search": "RAG Search"
+  },
+  "board": {
+    "title": "Visual RAG",
+    "app": "RAG Board",
+    "viewSearch": "Search View",
+    "gate": "Nanshan Home"
+  }
+}

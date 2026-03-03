@@ -1,0 +1,82 @@
+# EXAMPLE USAGE:
+#
+#   Refer for explanation to following link:
+#   https://lefthook.dev/configuration/
+#
+# pre-push:
+#   jobs:
+#     - name: packages audit
+#       tags:
+#         - frontend
+#         - security
+#       run: yarn audit
+#
+#     - name: gems audit
+#       tags:
+#         - backend
+#         - security
+#       run: bundle audit
+#
+# pre-commit:
+#   parallel: true
+#   jobs:
+#     - run: yarn eslint {staged_files}
+#       glob: "*.{js,ts,jsx,tsx}"
+#
+#     - name: rubocop
+#       glob: "*.rb"
+#       exclude:
+#         - config/application.rb
+#         - config/routes.rb
+#       run: bundle exec rubocop --force-exclusion {all_files}
+#
+#     - name: govet
+#       files: git ls-files -m
+#       glob: "*.go"
+#       run: go vet {files}
+#
+#     - script: "hello.js"
+#       runner: node
+#
+#     - script: "hello.go"
+#       runner: go run
+
+pre-commit:
+  parallel: true
+  commands:
+    code-workspace:
+      run: pnpm vsh code-workspace --auto-commit
+    lint-md:
+      files: git diff --cached --name-only --diff-filter=ACMR
+      run: pnpm prettier --cache --ignore-unknown --write {files}
+      glob: '*.md'
+    lint-vue:
+      files: git diff --cached --name-only --diff-filter=ACMR
+      run: pnpm prettier --write {files} && pnpm eslint --cache --fix {files} && pnpm stylelint --fix --allow-empty-input {files}
+      glob: '*.vue'
+    lint-js:
+      files: git diff --cached --name-only --diff-filter=ACMR
+      run: pnpm prettier --cache --ignore-unknown --write {files} && pnpm eslint --cache --fix {files}
+      glob: '*.{js,jsx,ts,tsx}'
+    lint-style:
+      files: git diff --cached --name-only --diff-filter=ACMR
+      run: pnpm prettier --cache --ignore-unknown --write {files} && pnpm stylelint --fix --allow-empty-input {files}
+      glob: '*.{scss,less,styl,html,vue,css}'
+    lint-package:
+      files: git diff --cached --name-only --diff-filter=ACMR
+      run: pnpm prettier --cache --write {files}
+      glob: 'package.json'
+    lint-json:
+      files: git diff --cached --name-only --diff-filter=ACMR
+      run: pnpm prettier --cache --write --parser json {files}
+      glob: '{!(package)*.json,*.code-snippets,.!(browserslist)*rc}'
+
+post-merge:
+  commands:
+    install:
+      run: pnpm install
+
+commit-msg:
+  commands:
+    commitlint:
+      run: pnpm exec commitlint --edit $1

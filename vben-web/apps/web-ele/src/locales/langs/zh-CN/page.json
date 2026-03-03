@@ -1,0 +1,31 @@
+{
+  "auth": {
+    "login": "登录",
+    "register": "注册",
+    "codeLogin": "验证码登录",
+    "qrcodeLogin": "二维码登录",
+    "forgetPassword": "忘记密码"
+  },
+  "dashboard": {
+    "title": "概览",
+    "analytics": "分析页",
+    "workspace": "工作台"
+  },
+  "chat": {
+    "title": "AI 对话"
+  },
+  "kb": {
+    "title": "知识库",
+    "chat": "知识库对话",
+    "management": "知识库管理",
+    "document": "文档管理",
+    "character": "角色管理",
+    "search": "RAG 检索"
+  },
+  "board": {
+    "title": "视觉RAG",
+    "app": "RAG看板",
+    "viewSearch": "检索视图",
+    "gate": "南山首页"
+  }
+}

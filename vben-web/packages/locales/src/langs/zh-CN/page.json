@@ -1,0 +1,49 @@
+{
+  "chat": {
+    "title": "AI 聊天",
+    "management": "会话管理"
+  },
+  "kg": {
+    "title": "知识图谱",
+    "dashboard": "概览",
+    "preview": "预览",
+    "construct": "构建",
+    "management": "管理"
+  },
+  "system": {
+    "title": "系统管理",
+    "role": {
+      "name": "角色",
+      "list": "角色管理",
+      "roleName": "角色名称",
+      "status": "状态",
+      "remark": "备注",
+      "setPermissions": "权限设置",
+      "createTime": "创建时间",
+      "operation": "操作"
+    },
+    "menu": {
+      "name": "菜单",
+      "manager": "菜单管理",
+      "menuTitle": "菜单标题",
+      "type": "类型",
+      "path": "路径",
+      "icon": "图标",
+      "status": "状态"
+    },
+    "user": {
+      "name": "用户",
+      "list": "用户管理",
+      "username": "用户名",
+      "avatar": "头像",
+      "email": "邮箱",
+      "permissions": "权限",
+      "createTime": "创建时间",
+      "lastVisitTime": "最新访问时间",
+      "status": "状态",
+      "operation": "操作"
+      ,"permissionSuper": "超级管理员"
+      ,"permissionAdmin": "普通管理员"
+    }
+  }
+}

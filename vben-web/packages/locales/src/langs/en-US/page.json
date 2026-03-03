@@ -1,0 +1,49 @@
+{
+  "chat": {
+    "title": "AI Chat",
+    "management": "Chat Management"
+  },
+  "kg": {
+    "title": "Knowledge Graph",
+    "dashboard": "Overview",
+    "preview": "Preview",
+    "construct": "Construct",
+    "management": "Management"
+  },
+  "system": {
+    "title": "System Management",
+    "role": {
+      "name": "Role",
+      "list": "Role Management",
+      "roleName": "Role Name",
+      "status": "Status",
+      "remark": "Remark",
+      "setPermissions": "Permissions",
+      "createTime": "Created Time",
+      "operation": "Operation"
+    },
+    "menu": {
+      "name": "Menu",
+      "manager": "Menu Management",
+      "menuTitle": "Menu Title",
+      "type": "Type",
+      "path": "Path",
+      "icon": "Icon",
+      "status": "Status"
+    },
+    "user": {
+      "name": "User",
+      "list": "User Management",
+      "username": "Username",
+      "avatar": "Avatar",
+      "email": "Email",
+      "permissions": "Permissions",
+      "createTime": "Created Time",
+      "lastVisitTime": "Last Visit Time",
+      "status": "Status",
+      "operation": "Operation"
+      ,"permissionSuper": "Super Administrator"
+      ,"permissionAdmin": "Administrator"
+    }
+  }
+}

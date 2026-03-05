@@ -497,10 +497,13 @@ function initGraph() {
     })
     .graphData({ nodes: [], links: [] });
 
+
+
+    // 这里调整大小
   try {
-    graph.d3Force('charge')?.strength?.(-140);
-    graph.d3Force('link')?.distance?.(90);
-    graph.d3VelocityDecay?.(0.35);
+    graph.d3Force('charge')?.strength?.(-240);
+    graph.d3Force('link')?.distance?.(140);
+    graph.d3VelocityDecay?.(0.25);
   } catch {}
 
   updateSize();

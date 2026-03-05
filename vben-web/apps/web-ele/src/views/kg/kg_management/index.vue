@@ -34,7 +34,8 @@ import {
   updateRelation,
   clearDatabase,
   exportDatabase,
-  cleanupVectors,
+  cleanupAllOrphanedData,
+  getChunksVectorStatus,
   deleteNode,
   deleteRelation
 } from './api';
@@ -55,6 +56,17 @@ const selectedElement = ref<any>(null); // Node or Link object
 const selectedType = ref<'node' | 'link' | null>(null);
 const editForm = reactive<{ properties: Record<string, any> }>({ properties: {} });
 const isEditing = ref(false);
+
+// Chunk & Vector Status
+const chunksStatus = reactive<{
+  orphaned_chunks: number;
+  vectorized_chunks: number;
+  summary: string;
+}>({
+  orphaned_chunks: 0,
+  vectorized_chunks: 0,
+  summary: ''
+});
 
 // --- Methods ---
 
@@ -384,8 +396,13 @@ const handleExportDoc = async () => {
 
 const handleCleanupVectors = async () => {
   try {
+    if (!selectedDatabase.value) {
+      ElMessage.warning('请先选择数据库');
+      return;
+    }
+
     await ElMessageBox.confirm(
-      '确定要清理孤立向量吗？这将删除所有没有对应图谱节点的向量数据。',
+      '确定要清理孤立数据吗？这将删除所有没有对应关联的向量和Chunk节点。',
       '清理确认',
       {
         confirmButtonText: '确定清理',
@@ -395,12 +412,34 @@ const handleCleanupVectors = async () => {
     );
     
     loading.value = true;
-    const res = await cleanupVectors();
+    const res = await cleanupAllOrphanedData(selectedDatabase.value);
     const data = res.data || res;
     
     if (data.success) {
       const stats = data.data || {};
-      ElMessage.success(`清理完成: 删除了 ${stats.deleted_isolated_vectors || 0} 个孤立向量`);
+      const messages = [];
+      
+      if (stats.vectors?.deleted > 0) {
+        messages.push(`删除了 ${stats.vectors.deleted} 个孤立向量`);
+      }
+      if (stats.chunks?.deleted > 0) {
+        messages.push(`删除了 ${stats.chunks.deleted} 个孤立Chunk`);
+        if (stats.chunks.mentions > 0) {
+          messages.push(`${stats.chunks.mentions} 个MENTIONS关系`);
+        }
+        if (stats.chunks.contains > 0) {
+          messages.push(`${stats.chunks.contains} 个CONTAINS关系`);
+        }
+      }
+      
+      const msgText = messages.length > 0 
+        ? messages.join(', ') 
+        : '未发现需要清理的数据';
+      
+      ElMessage.success(`清理完成: ${msgText}`);
+      // 刷新状态
+      await loadChunksStatus();
+      await initGraph();
     } else {
       throw new Error(data.error || '清理失败');
     }
@@ -414,6 +453,30 @@ const handleCleanupVectors = async () => {
   }
 };
 
+const loadChunksStatus = async () => {
+  try {
+    if (!selectedDatabase.value) {
+      chunksStatus.orphaned_chunks = 0;
+      chunksStatus.vectorized_chunks = 0;
+      chunksStatus.summary = '';
+      return;
+    }
+
+    const res = await getChunksVectorStatus(selectedDatabase.value);
+    const data = res.data || res;
+    
+    if (data.success) {
+      const status = data.data || {};
+      chunksStatus.orphaned_chunks = status.orphaned_chunks || 0;
+      chunksStatus.vectorized_chunks = status.vectorized_chunks || 0;
+      chunksStatus.summary = status.summary || '';
+    }
+  } catch (error) {
+    console.error('Failed to load chunks status:', error);
+  }
+};
+
+
 const handleResize = () => {
   if (graphInstance && graphContainer.value) {
     graphInstance.width(graphContainer.value.clientWidth);
@@ -426,8 +489,12 @@ watch(selectedDatabase, async (newVal) => {
   selectedCommunityId.value = undefined;
   if (newVal) {
     await loadCommunities();
+    await loadChunksStatus();
   } else {
     communities.value = [];
+    chunksStatus.orphaned_chunks = 0;
+    chunksStatus.vectorized_chunks = 0;
+    chunksStatus.summary = '';
   }
   initGraph();
 });
@@ -439,6 +506,7 @@ watch(selectedCommunityId, () => {
 // Lifecycle
 onMounted(() => {
   loadDatabases();
+  loadChunksStatus();
   nextTick(() => {
     initGraph();
   });
@@ -557,8 +625,9 @@ onUnmounted(() => {
               @click="handleCleanupVectors"
               :loading="loading"
             >
-              清理孤立向量
+              清理孤立数据
             </el-button>
+
             <el-button 
               type="info" 
               plain 

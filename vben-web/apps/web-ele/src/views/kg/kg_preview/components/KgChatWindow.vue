@@ -58,8 +58,7 @@
             v-model="selectedDocId"
             size="small"
             style="width: 100px"
-            placeholder="默认库"
-            clearable
+            placeholder="选择知识库"
             class="doc-select"
             popper-class="doc-select-dropdown"
             :teleported="true"
@@ -507,6 +506,7 @@ import {
   type KgChatMessage,
   type SearchStrategy,
   type EntityInfo,
+  type RelationInfo,
   type Neo4jDatabaseInfo,
 } from '../utils/api';
 
@@ -523,7 +523,7 @@ const emit = defineEmits<{
     nodeIds: string[];
     linkIds: string[];
     maxDepth: number;
-    graph?: { nodes: any[]; edges: any[] };
+    graph?: { nodes: any[]; edges: any[]; links?: any[] };
   }];
   'update:docId': [docId: string];
   close: [];
@@ -755,6 +755,20 @@ async function checkServiceStatus() {
 }
 
 // 构建对话历史（用于 API 请求）
+function buildApiChatHistory(limit = 12) {
+  const history = messages.value
+    .filter((msg) => {
+      if (msg.loading || msg.error) return false;
+      if (!msg.content || !msg.content.trim()) return false;
+      return msg.role === 'user' || msg.role === 'assistant';
+    })
+    .map((msg) => ({
+      role: msg.role,
+      content: msg.content,
+    }));
+
+  return history.slice(-limit);
+}
 
 function buildDemoEntitiesByQuestion(question: string): EntityInfo[] {
   const normalized = question.toLowerCase();
@@ -788,10 +802,30 @@ function buildDemoEntitiesByQuestion(question: string): EntityInfo[] {
   return picked.slice(0, 5);
 }
 
+function buildDemoRelationsByEntities(entities: EntityInfo[]): RelationInfo[] {
+  if (!Array.isArray(entities) || entities.length < 2) return [];
+  const relations: RelationInfo[] = [];
+  for (let i = 0; i < entities.length - 1; i += 1) {
+    const source = entities[i]?.name;
+    const target = entities[i + 1]?.name;
+    if (!source || !target) continue;
+    relations.push({
+      source,
+      target,
+      type: '关联',
+      description: `${source} 与 ${target} 存在语义关联`,
+    });
+  }
+  return relations;
+}
+
 // 发送消息
 async function handleSend() {
   const question = inputText.value.trim();
   if (!question || isLoading.value) return;
+
+  // 发送前抓取历史上下文（不包含本轮问题）
+  const apiChatHistory = buildApiChatHistory(12);
 
   if (!currentSessionId.value) {
     try {
@@ -845,22 +879,37 @@ async function handleSend() {
   }, 800);
 
   try {
+    const activeDatabase = selectedDocId.value || props.docId || '';
+    if (!activeDatabase) {
+      throw new Error('请先选择知识库（database）');
+    }
+
     const searchResult = await hybridSearch(
       question,
       selectedStrategy.value,
-      5,
-      [],
+      20,
+      apiChatHistory,
       currentSessionId.value,
       undefined,
-      selectedDocId.value || undefined
+      activeDatabase
     );
 
     const lastMessage = messages.value[messages.value.length - 1];
     if (lastMessage && lastMessage.role === 'assistant') {
       lastMessage.loading = false;
       lastMessage.strategy = searchResult.strategy_used || selectedStrategy.value;
-      lastMessage.entities = searchResult.local_result?.entities || [];
-      lastMessage.relations = searchResult.local_result?.relations || [];
+      const apiEntities = searchResult.local_result?.entities || [];
+      const apiRelations = searchResult.local_result?.relations || [];
+
+      const explainEntities =
+        apiEntities.length > 0 ? apiEntities : buildDemoEntitiesByQuestion(question);
+      const explainRelations =
+        apiRelations.length > 0
+          ? apiRelations
+          : buildDemoRelationsByEntities(explainEntities);
+
+      lastMessage.entities = explainEntities;
+      lastMessage.relations = explainRelations;
       lastMessage.chunks = searchResult.local_result?.chunks || [];
       lastMessage.communities_used = searchResult.global_result?.communities_used;
 
@@ -872,21 +921,20 @@ async function handleSend() {
 
       // Emit kg-highlight for explain view
       // Important: Deep clone to avoid reactive proxy issues when passed to another view
-      const graphNodes = JSON.parse(JSON.stringify(lastMessage.entities.map(e => ({
+      const graphNodes = JSON.parse(JSON.stringify(explainEntities.map(e => ({
         id: e.name,
         label: e.name,
-        name: e.name, // Ensure name property exists
         ...e,
         value: 1 // Default value
       }))));
       
-      const graphEdges = JSON.parse(JSON.stringify(lastMessage.relations.map((r, idx) => ({
+      const graphEdges = JSON.parse(JSON.stringify(explainRelations.map((r, idx) => ({
+        ...r,
         id: `rel_${idx}`,
         source: r.source,
         target: r.target,
         relationType: r.type,
-        description: r.description, // Ensure description is passed
-        ...r
+        description: r.description // Ensure description is passed
       }))));
 
       // Log for debugging
@@ -912,6 +960,37 @@ async function handleSend() {
     }
   } catch (error: any) {
     console.error('GraphRAG search failed:', error);
+    const fallbackQuestion = question || '知识图谱问答演示';
+    const fallbackEntities = buildDemoEntitiesByQuestion(fallbackQuestion);
+    const fallbackRelations = buildDemoRelationsByEntities(fallbackEntities);
+
+    const fallbackNodes = fallbackEntities.map((e) => ({
+      ...e,
+      id: e.name,
+      label: e.name,
+      value: 1,
+    }));
+    const fallbackEdges = fallbackRelations.map((r, idx) => ({
+      ...r,
+      id: `fallback_rel_${idx}`,
+      source: r.source,
+      target: r.target,
+      relationType: r.type,
+      description: r.description,
+    }));
+
+    emit('kg-highlight', {
+      seedNodeIds: fallbackNodes.map((n) => n.id),
+      nodeIds: fallbackNodes.map((n) => n.id),
+      linkIds: fallbackEdges.map((e) => e.id),
+      maxDepth: 1,
+      graph: {
+        nodes: fallbackNodes,
+        edges: fallbackEdges,
+        links: fallbackEdges,
+      },
+    });
+
     const lastMessage = messages.value[messages.value.length - 1];
     if (lastMessage && lastMessage.role === 'assistant') {
       lastMessage.loading = false;
@@ -955,7 +1034,6 @@ function triggerDemoHighlight() {
   const graphNodes = demoEntities.map(e => ({
     id: e.name,
     label: e.name,
-    name: e.name,
     ...e,
     value: 1
   }));

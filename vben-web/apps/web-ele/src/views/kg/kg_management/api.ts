@@ -52,3 +52,15 @@ export async function cleanupVectors() {
   return baseRequestClient.post('/kg/vectors/cleanup');
 }
 
+export async function cleanupAllOrphanedData(database?: string) {
+  return baseRequestClient.post('/kg/cleanup', { database });
+}
+
+export async function cleanupOrphanedChunks() {
+  return baseRequestClient.post('/kg/chunks/cleanup-orphaned');
+}
+
+export async function getChunksVectorStatus(database?: string) {
+  return baseRequestClient.get('/kg/chunks/status', { params: { database } });
+}
+

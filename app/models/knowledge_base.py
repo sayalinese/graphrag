@@ -11,7 +11,7 @@ from ..extensions import db
 
 class KnowledgeBase(db.Model):
     """知识库模型"""
-    __tablename__ = 'knowledge_bases'
+    __tablename__ = 'kb_knowledge_bases'
 
     id = db.Column(db.Integer, primary_key=True)
     kb_id = db.Column(UUID(as_uuid=True), unique=True, nullable=False, default=uuid.uuid4)
@@ -40,11 +40,11 @@ class KnowledgeBase(db.Model):
 
 class Document(db.Model):
     """文档模型"""
-    __tablename__ = 'documents'
+    __tablename__ = 'kb_documents'
 
     id = db.Column(db.Integer, primary_key=True)
     doc_id = db.Column(UUID(as_uuid=True), unique=True, nullable=False, default=uuid.uuid4)
-    kb_id = db.Column(UUID(as_uuid=True), db.ForeignKey('knowledge_bases.kb_id'), nullable=False)
+    kb_id = db.Column(UUID(as_uuid=True), db.ForeignKey('kb_knowledge_bases.kb_id'), nullable=False)
     filename = db.Column(db.String(255), nullable=False)
     file_path = db.Column(db.String(1024), nullable=True)
     content = db.Column(db.Text, nullable=True)
@@ -71,11 +71,11 @@ class Document(db.Model):
 
 class DocumentChunk(db.Model):
     """文档切片模型 - 用于存储切分后的文本块"""
-    __tablename__ = 'document_chunks'
+    __tablename__ = 'kb_document_chunks'
 
     id = db.Column(db.Integer, primary_key=True)
     chunk_id = db.Column(UUID(as_uuid=True), unique=True, nullable=False, default=uuid.uuid4)
-    doc_id = db.Column(UUID(as_uuid=True), db.ForeignKey('documents.doc_id'), nullable=False)
+    doc_id = db.Column(UUID(as_uuid=True), db.ForeignKey('kb_documents.doc_id'), nullable=False)
     content = db.Column(db.Text, nullable=False)
     chunk_index = db.Column(db.Integer, nullable=False)  # 在文档中的顺序
     metadata_json = db.Column(JSON, nullable=True)  # 存储额外的元数据

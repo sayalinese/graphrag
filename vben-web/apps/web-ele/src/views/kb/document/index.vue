@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, watch, computed, defineAsyncComponent } from "vue";
+import { ref, onMounted, onUnmounted, watch, computed, defineAsyncComponent } from "vue";
 import { useRoute } from "vue-router";
 import { 
   ElMessage, 
@@ -77,6 +77,8 @@ const route = useRoute();
 const knowledgeOptions = ref<KnowledgeBaseVO[]>([]);
 const selectedKbId = ref<number | undefined>(undefined);
 const multipleSelection = ref<DocRow[]>([]);
+let docsPollTimer: ReturnType<typeof setTimeout> | null = null;
+const docsLoadingInFlight = ref(false);
 
 // 切分块抽屉（调试观测）
 const chunksDrawerVisible = ref(false);
@@ -345,20 +347,51 @@ async function loadKBs() {
   knowledgeOptions.value = knowledge_bases;
 }
 
+function clearDocsPollTimer() {
+  if (docsPollTimer) {
+    clearTimeout(docsPollTimer);
+    docsPollTimer = null;
+  }
+}
+
+function scheduleSilentDocsPoll() {
+  clearDocsPollTimer();
+  docsPollTimer = setTimeout(async () => {
+    if (!selectedKbId.value || docsLoadingInFlight.value) return;
+    try {
+      const { documents: latestDocuments } = await listDocuments(selectedKbId.value);
+      tableData.value = latestDocuments;
+
+      const stillIndexing = latestDocuments.some(d => d.status === 'indexing');
+      if (stillIndexing) {
+        scheduleSilentDocsPoll();
+      }
+    } catch {
+      // 轮询失败时，不打断用户操作；下一次手动刷新可恢复
+    }
+  }, 2000);
+}
+
 async function loadDocs() {
   if (!selectedKbId.value) return;
+  if (docsLoadingInFlight.value) return;
+  docsLoadingInFlight.value = true;
   loading.value = true;
   try {
     const { documents } = await listDocuments(selectedKbId.value);
     tableData.value = documents;
-    
-    // 如果有向量化中的文档，定时轮询状态更新
+
+    // 清理旧轮询，避免叠加多个定时器
+    clearDocsPollTimer();
+
+    // 如果有向量化中的文档，静默轮询状态更新（不触发全页抖动）
     const indexingDocs = documents.filter(d => d.status === 'indexing');
     if (indexingDocs.length > 0) {
-      setTimeout(() => loadDocs(), 2000); // 2秒后重新加载
+      scheduleSilentDocsPoll();
     }
   } finally {
     loading.value = false;
+    docsLoadingInFlight.value = false;
   }
 }
 
@@ -388,6 +421,10 @@ onMounted(async () => {
   const kbFromQuery = Number(route.query.kb_id);
   if (kbFromQuery) selectedKbId.value = kbFromQuery;
   await loadDocs();
+});
+
+onUnmounted(() => {
+  clearDocsPollTimer();
 });
 
 const loadMoreChunks = async () => {
@@ -486,10 +523,11 @@ const openDocChunks = async (row: DocRow) => {
         :data="tableData"
         v-loading="loading"
         class="w-full"
+        row-key="doc_id"
         border
         @selection-change="handleSelectionChange"
       >
-        <ElTableColumn type="selection" width="55" />
+        <ElTableColumn type="selection" width="55" :reserve-selection="true" />
         <ElTableColumn prop="doc_id" label="ID" width="140" />
         <ElTableColumn prop="filename" label="文件名" min-width="240" />
         <ElTableColumn prop="status" label="状态" width="120">

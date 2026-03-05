@@ -24,6 +24,7 @@ import { nodeStyleDefinitions } from './style.vue';
 const props = withDefaults(
   defineProps<{
     autoRotate?: boolean;
+    graphLimit?: number;
     nodeSize?: number;
     nodeStyle?: string;
     searchKeyword?: string;
@@ -36,6 +37,7 @@ const props = withDefaults(
     searchKeyword: '',
     selectedCategory: '',
     selectedDatabase: '',
+    graphLimit: 300,
     showLabels: true,
     showEdges: true,
     nodeSize: 1,
@@ -76,6 +78,7 @@ let particleAnimationId: null | number = null;
 let particleSetupScheduled = false;
 let particleAutoRotateActive = true;
 let currentAnimationId = 0;
+let graphLimitFetchTimer: null | ReturnType<typeof setTimeout> = null;
 
 // 图谱数据缓存（使用 sessionStorage）
 const GRAPH_CACHE_KEY = 'kg_graph_cache';
@@ -84,10 +87,19 @@ const GRAPH_CACHE_EXPIRY = 5 * 60 * 1000; // 5 分钟缓存有效期
 interface GraphCacheEntry {
   data: VisualizerData;
   database: string | undefined;
+  limit: number;
   timestamp: number;
 }
 
-function getGraphCache(database: string | undefined): null | VisualizerData {
+function hasGraphContent(data: null | VisualizerData | undefined): boolean {
+  if (!data) return false;
+  return (data.nodes?.length ?? 0) > 0 || (data.edges?.length ?? 0) > 0;
+}
+
+function getGraphCache(
+  database: string | undefined,
+  limit: number,
+): null | VisualizerData {
   try {
     const cached = sessionStorage.getItem(GRAPH_CACHE_KEY);
     if (!cached) return null;
@@ -101,8 +113,13 @@ function getGraphCache(database: string | undefined): null | VisualizerData {
       return null;
     }
 
-    // 检查 database 是否匹配
-    if (entry.database !== database) {
+    // 检查 database 与 limit 是否匹配
+    if (entry.database !== database || entry.limit !== limit) {
+      return null;
+    }
+
+    if (!hasGraphContent(entry.data)) {
+      sessionStorage.removeItem(GRAPH_CACHE_KEY);
       return null;
     }
 
@@ -114,11 +131,19 @@ function getGraphCache(database: string | undefined): null | VisualizerData {
   }
 }
 
-function setGraphCache(data: VisualizerData, database: string | undefined): void {
+function setGraphCache(
+  data: VisualizerData,
+  database: string | undefined,
+  limit: number,
+): void {
   try {
+    if (!hasGraphContent(data)) {
+      return;
+    }
     const entry: GraphCacheEntry = {
       data,
       database,
+      limit,
       timestamp: Date.now(),
     };
     sessionStorage.setItem(GRAPH_CACHE_KEY, JSON.stringify(entry));
@@ -169,6 +194,35 @@ interface GraphEdge extends LinkObject<GraphNode> {
 interface VisualizerData {
   nodes: GraphNode[];
   edges: GraphEdge[];
+}
+
+function fallbackNormalizeGraph(rawNodes: unknown[], rawEdges: unknown[]): VisualizerData {
+  const nodes: GraphNode[] = (Array.isArray(rawNodes) ? rawNodes : [])
+    .map((item: any, index) => {
+      const id = String(item?.id ?? item?.neo_id ?? item?.elementId ?? `node-${index}`);
+      const label = String(item?.label ?? item?.name ?? id);
+      const category = String(item?.category ?? item?.type ?? 'DEFAULT').toUpperCase();
+      const value = Number(item?.value ?? item?.weight ?? 1) || 1;
+      return { id, label, category, value } as GraphNode;
+    })
+    .filter((node) => Boolean(node.id));
+
+  const nodeIdSet = new Set(nodes.map((n) => n.id));
+
+  const edges: GraphEdge[] = (Array.isArray(rawEdges) ? rawEdges : [])
+    .map((item: any) => {
+      const source = String(item?.source ?? item?.from ?? item?.start ?? '');
+      const target = String(item?.target ?? item?.to ?? item?.end ?? '');
+      const label = String(item?.label ?? item?.type ?? 'RELATED_TO');
+      const value = Number(item?.value ?? item?.weight ?? 1) || 1;
+      return { source, target, label, value } as GraphEdge;
+    })
+    .filter((edge) => {
+      if (!edge.source || !edge.target) return false;
+      return nodeIdSet.has(edge.source) && nodeIdSet.has(edge.target);
+    });
+
+  return { nodes, edges };
 }
 
 function toPlainObject(value: unknown): null | Record<string, any> {
@@ -974,9 +1028,14 @@ async function fetchGraphData(useDemo = false, forceRefresh = false) {
   loading.value = true;
   try {
     if (!useDemo) {
+      const effectiveLimit = Math.max(
+        100,
+        Math.min(5000, Number(props.graphLimit) || 300),
+      );
+
       // 尝试从缓存获取数据（除非强制刷新）
       if (!forceRefresh) {
-        const cachedData = getGraphCache(props.selectedDatabase);
+        const cachedData = getGraphCache(props.selectedDatabase, effectiveLimit);
         if (cachedData) {
           graphData.value = cachedData;
           updateGraphData();
@@ -989,33 +1048,63 @@ async function fetchGraphData(useDemo = false, forceRefresh = false) {
       }
 
       // 构建带数据库参数的 URL
-      const urlParams = new URLSearchParams({ limit: '100' });
+      const urlParams = new URLSearchParams({ limit: String(effectiveLimit) });
       if (props.selectedDatabase) {
         urlParams.append('database', props.selectedDatabase);
       }
-      const response = await fetch(`/api/kg/visualize?${urlParams.toString()}`);
-      if (response.ok) {
-        const payload = await response.json();
-        const nodes = payload?.data?.nodes;
-        const edges = payload?.data?.edges;
-        if (payload?.success && Array.isArray(nodes) && Array.isArray(edges)) {
-          const normalized = normalizeBackendGraph(nodes, edges);
-          if (normalized.nodes.length > 0) {
-            graphData.value = normalized;
-            // 缓存数据
-            setGraphCache(normalized, props.selectedDatabase);
-            updateGraphData();
-            return;
+      const endpointCandidates = ['/api/kg/visualize', '/kg/visualize'];
+      let payload: any = null;
+      let lastError: any = null;
+
+      for (const endpoint of endpointCandidates) {
+        try {
+          const response = await fetch(`${endpoint}?${urlParams.toString()}`);
+          if (!response.ok) {
+            throw new Error(`请求失败: ${response.status}`);
           }
+          payload = await response.json();
+          lastError = null;
+          break;
+        } catch (error) {
+          lastError = error;
         }
       }
+
+      if (!payload) {
+        throw lastError ?? new Error('图谱接口请求失败');
+      }
+
+      const data = payload?.data ?? {};
+      const nodes = data?.nodes ?? data?.vertices ?? data?.entities ?? [];
+      const edges = data?.edges ?? data?.links ?? data?.relations ?? data?.relationships ?? [];
+
+      if (!(payload?.success && Array.isArray(nodes) && Array.isArray(edges))) {
+        throw new Error(payload?.error || '图谱数据格式不正确');
+      }
+
+      let normalized = normalizeBackendGraph(nodes, edges);
+      if (!hasGraphContent(normalized) && ((nodes?.length ?? 0) > 0 || (edges?.length ?? 0) > 0)) {
+        normalized = fallbackNormalizeGraph(nodes, edges);
+      }
+      if (!hasGraphContent(normalized)) {
+        throw new Error('后端返回空图数据');
+      }
+      graphData.value = normalized;
+      setGraphCache(normalized, props.selectedDatabase, effectiveLimit);
+      updateGraphData();
+      return;
     }
+
     populateDemoData();
     updateGraphData();
   } catch (error) {
-    console.warn('获取知识图谱数据失败，使用演示数据', error);
-    populateDemoData();
-    updateGraphData();
+    if (!useDemo) {
+      console.warn('获取知识图谱数据失败', error);
+      const reason = error instanceof Error ? error.message : '未知错误';
+      ElMessage.error(`图谱加载失败：${reason}`);
+      return;
+    }
+    console.warn('获取演示数据失败', error);
   } finally {
     // 延迟关闭 loading，让图谱有时间渲染和布局，配合淡出动画实现丝滑过渡
     setTimeout(() => {
@@ -1194,6 +1283,18 @@ watch(
   () => props.selectedDatabase,
   () => fetchGraphData(shouldUseDemoData()),
 );
+watch(
+  () => props.graphLimit,
+  () => {
+    if (graphLimitFetchTimer) {
+      clearTimeout(graphLimitFetchTimer);
+    }
+    graphLimitFetchTimer = setTimeout(() => {
+      fetchGraphData(shouldUseDemoData(), true);
+      graphLimitFetchTimer = null;
+    }, 250);
+  },
+);
 
 onMounted(async () => {
   initForceGraph();
@@ -1206,6 +1307,10 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', updateGraphSize);
+  if (graphLimitFetchTimer) {
+    clearTimeout(graphLimitFetchTimer);
+    graphLimitFetchTimer = null;
+  }
   disposeParticleBackground();
   if (graphInstance) {
     (graphInstance as unknown as { _destructor?: () => void })._destructor?.();

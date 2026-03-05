@@ -15,13 +15,22 @@ class GraphService:
     """Neo4j 图数据库基础服务"""
     
     def __init__(self, driver: Driver):
-        """
-        初始化图服务
-        
-        Args:
-            driver: Neo4j 驱动实例
-        """
-        self.driver = driver
+        self._driver = driver
+
+    @property
+    def driver(self):
+        """动态获取驱动：若为 None 则尝试重连（不在每次查询时验证连通性）"""
+        if self._driver is None:
+            try:
+                from app.extensions import get_neo4j_driver
+                self._driver = get_neo4j_driver()
+            except Exception as e:
+                logger.warning(f"Neo4j 重连失败: {e}")
+        return self._driver
+
+    @driver.setter
+    def driver(self, value):
+        self._driver = value
 
     def _session(self, database: Optional[str] = None):
         if database:
@@ -29,16 +38,7 @@ class GraphService:
         return self.driver.session()
     
     def execute_query(self, query: str, parameters: Optional[Dict] = None, database: Optional[str] = None) -> List[Dict]:
-        """
-        执行 Cypher 查询
-        
-        Args:
-            query: Cypher 查询语句
-            parameters: 查询参数
-        
-        Returns:
-            查询结果列表
-        """
+        """执行 Cypher 查询，遇到驱动级错误时自动重连一次"""
         if not self.driver:
             logger.error("Neo4j driver is not initialized. Cannot execute query.")
             return []
@@ -46,7 +46,12 @@ class GraphService:
             with self._session(database) as session:
                 result = session.run(query, parameters or {})
                 return [dict(record) for record in result]
-        except (DriverError, Neo4jError) as e:
+        except DriverError as e:
+            # 驱动断开，清空缓存触发下次重连
+            logger.warning(f"Neo4j 驱动异常，重置连接: {e}")
+            self._driver = None
+            raise
+        except Neo4jError as e:
             logger.error(f"Neo4j 查询执行失败: {e}")
             raise
     

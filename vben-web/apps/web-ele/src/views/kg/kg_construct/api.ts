@@ -32,10 +32,11 @@ export async function ingestText(text: string, docId?: string, kbId?: string, fi
 /**
  * 触发社区检测 (耗时操作，超时时间设置为 300 秒)
  */
-export async function detectCommunities(writeProperty = true, database?: string) {
+export async function detectCommunities(writeProperty = true, database?: string, mode = 'auto') {
   return baseRequestClient.post('/kg/graphrag/detect_communities', {
     write_property: writeProperty,
     database,
+    mode,
   }, {
     timeout: 300000 // 300 秒
   });
@@ -85,6 +86,6 @@ export async function repairDatabaseIntegrity(database: string, targets?: string
   return baseRequestClient.post(`/kg/databases/${encodeURIComponent(database)}/repair`, {
     targets,
   }, {
-    timeout: 300000,
+    timeout: 600000, // 600 秒（实体向量化批量处理耗时较长）
   });
 }

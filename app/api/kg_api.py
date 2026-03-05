@@ -2,6 +2,7 @@ import logging
 from typing import Any, Dict, List, Optional
 from datetime import datetime, date, timezone
 import os
+import re
 import uuid
 from flask import Blueprint, request, jsonify, current_app
 from app.services.rag_service import RAGService
@@ -22,6 +23,40 @@ def get_rag_service():
         api_key = current_app.config.get('DEEPSEEK_API_KEY', '')
         current_app.rag_service = RAGService(mode='graphrag', deepseek_api_key=api_key)
     return current_app.rag_service
+
+
+def _vector_collection_for_database(db_name: Optional[str]) -> str:
+    svc = getattr(current_app, 'graphrag_service', None)
+    if svc and hasattr(svc, 'get_vector_collection_name'):
+        try:
+            return svc.get_vector_collection_name(db_name)
+        except Exception:
+            pass
+    base = os.getenv('PGVECTOR_COLLECTION', 'graphrag_collection')
+    db = (db_name or '').strip()
+    if not db:
+        return base
+    safe = re.sub(r'[^0-9a-zA-Z_]+', '_', db.lower()).strip('_') or 'default'
+    return f"{base}__{safe}"
+
+
+def _count_vectors_for_database(db_name: Optional[str]) -> int:
+    collection_name = _vector_collection_for_database(db_name)
+    try:
+        row = db.session.execute(
+            text(
+                """
+                SELECT COUNT(*)
+                FROM kg_pg_embedding e
+                JOIN kg_pg_collection c ON e.collection_id = c.uuid
+                WHERE c.name = :name
+                """
+            ),
+            {"name": collection_name},
+        ).fetchone()
+        return int(row[0]) if row else 0
+    except Exception:
+        return 0
 
 
 def serialize_node_record(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -417,11 +452,11 @@ def export_database_graph(db_name: str):
 
         node_query = """
         MATCH (n)
-        RETURN elementId(n) AS element_id, id(n) AS neo_id, labels(n) AS labels, properties(n) AS properties
+        RETURN elementId(n) AS element_id, elementId(n) AS neo_id, labels(n) AS labels, properties(n) AS properties
         """
         rel_query = """
         MATCH (a)-[r]->(b)
-        RETURN elementId(r) AS element_id, id(r) AS neo_id, type(r) AS type,
+        RETURN elementId(r) AS element_id, elementId(r) AS neo_id, type(r) AS type,
                elementId(a) AS source, elementId(b) AS target, properties(r) AS properties
         """
 
@@ -545,25 +580,87 @@ def check_database_integrity(db_name: str):
             database=db_name,
         )
 
-        source_docs = db.session.query(Document).count()
-        source_chunks = db.session.query(DocumentChunk).count()
+        source_docs_row = graph_service.execute_query_single(
+            "MATCH (d:Document) RETURN count(d) AS count",
+            {},
+            database=db_name,
+        )
+        source_chunks_row = graph_service.execute_query_single(
+            "MATCH (c:Chunk) RETURN count(c) AS count",
+            {},
+            database=db_name,
+        )
+        graph_chunks_row = graph_service.execute_query_single(
+            """
+            MATCH (d:Document)-[:CONTAINS]->(c:Chunk)
+            RETURN count(DISTINCT c) AS count
+            """,
+            {},
+            database=db_name,
+        )
+        
+        # 检测孤立Chunk（1. 没有vec_id或 2. 没有对应Document）
+        orphaned_chunks_row = graph_service.execute_query_single(
+            """
+            MATCH (c:Chunk)
+            WHERE (c.vec_id IS NULL OR c.vec_id = '') 
+               OR NOT EXISTS { MATCH (d:Document)-[:CONTAINS]->(c) }
+            RETURN count(c) AS count
+            """,
+            {},
+            database=db_name,
+        )
 
-        vector_table = os.getenv('PG_VECTOR_TABLE', 'langchain_pg_embedding')
-        vector_count = 0
-        try:
-            vector_count_res = db.session.execute(text(f"SELECT COUNT(*) AS c FROM {vector_table}"))
-            row = vector_count_res.fetchone()
-            vector_count = int(row[0]) if row else 0
-        except Exception:
-            vector_count = 0
+        source_docs = int((source_docs_row or {}).get('count', 0))
+        source_chunks = int((source_chunks_row or {}).get('count', 0))
+        graph_chunks = int((graph_chunks_row or {}).get('count', 0))
+        orphaned_chunks = int((orphaned_chunks_row or {}).get('count', 0))
+
+        vector_count = _count_vectors_for_database(db_name)
 
         neo_nodes_count = int((neo_nodes or {}).get('count', 0))
         neo_edges_count = int((neo_edges or {}).get('count', 0))
 
+        # 实体节点数（纯实体型 KG 的向量覆盖率计算基准）——排除 Chunk/Document/Community
+        entity_nodes_row = graph_service.execute_query_single(
+            "MATCH (n) WHERE NOT n:Chunk AND NOT n:Document AND NOT n:Community RETURN COUNT(n) AS count",
+            {},
+            database=db_name,
+        )
+        entity_nodes_count = int((entity_nodes_row or {}).get('count', 0))
+
+        # 向量覆盖率：如果是文档型用 graph_chunks 作分母，实体型用 entity_nodes_count 作分母
+        reference_count = graph_chunks if graph_chunks > 0 else entity_nodes_count
+        raw_coverage = (vector_count / reference_count) if reference_count > 0 else 1.0
+        vector_coverage = round(min(raw_coverage, 1.0), 4)  # cap 到 1.0，避免向量重复导致超过 100%
+
+        # 向量缺失：完全为空，或覆盖率（未 cap）低于 100%（且实体/chunk 数足够）
+        vector_missing = vector_count == 0 or (
+            reference_count >= 50 and raw_coverage < 1.0
+        )
+
+        # 社区数量（统计有 community_id 属性的非Chunk/Document节点的不同社区数）
+        comm_row = graph_service.execute_query_single(
+            """
+            MATCH (n)
+            WHERE n.community_id IS NOT NULL AND NOT n:Chunk AND NOT n:Document
+            RETURN COUNT(DISTINCT n.community_id) AS count
+            """,
+            {},
+            database=db_name,
+        )
+        communities_count = int((comm_row or {}).get('count', 0))
+
+        # 社区缺失：节点数足够多（>100）但没有社区划分
+        community_missing = communities_count == 0 and neo_nodes_count > 100
+
         status = {
-            "vector_missing": vector_count == 0,
-            "source_missing": source_docs == 0 and source_chunks == 0,
+            "vector_missing": vector_missing,
+            # 纯实体型 KG（neo_nodes 足够多）无需文档源，不标记 source_missing
+            "source_missing": source_docs == 0 and source_chunks == 0 and neo_nodes_count < 50,
             "neo_missing": neo_nodes_count == 0,
+            "orphaned_chunks": orphaned_chunks > 0,
+            "community_missing": community_missing,
         }
         status["all_healthy"] = not any(status.values())
 
@@ -577,13 +674,19 @@ def check_database_integrity(db_name: str):
                     "neo_edges": neo_edges_count,
                     "source_docs": source_docs,
                     "source_chunks": source_chunks,
+                    "graph_chunks": graph_chunks,
                     "vectors": vector_count,
+                    "orphaned_chunks": orphaned_chunks,
+                    "entity_nodes": entity_nodes_count,
+                    "vector_coverage": vector_coverage,
+                    "communities": communities_count,
                 }
             }
         })
     except Exception as e:
         logger.error(f"数据库完整性检测失败: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
+
 
 
 @kg_bp.route('/databases/<string:db_name>/repair', methods=['POST'])
@@ -594,95 +697,430 @@ def repair_database_integrity(db_name: str):
             return jsonify({"success": False, "error": "非法数据库名称"}), 400
 
         payload = request.json or {}
-        targets = payload.get('targets') or ['vector', 'neo4j']
+        targets = payload.get('targets') or ['neo4j']
         if not isinstance(targets, list):
-            targets = ['vector', 'neo4j']
+            targets = ['neo4j']
+        neo4j_only = bool(payload.get('neo4j_only') or payload.get('prefer_neo4j_only'))
+        max_neo_chunks = int(payload.get('max_neo_chunks') or 8000)
+        if max_neo_chunks <= 0:
+            max_neo_chunks = 8000
 
-        rag_service = get_rag_service()
-        svc = getattr(current_app, 'graphrag_service', None) or get_graphrag_service()
+        svc = getattr(current_app, 'graphrag_service', None) or get_rag_service()
 
         repaired = {
             "vector_repaired": False,
             "neo4j_repaired": False,
             "vector_docs_upserted": 0,
             "neo4j_docs_reingested": 0,
+            "vector_error": None,
+            "neo4j_error": None,
             "notes": [],
         }
 
-        source_chunks = db.session.query(DocumentChunk).order_by(DocumentChunk.created_at.asc()).limit(5000).all()
-        source_docs = db.session.query(Document).order_by(Document.created_at.asc()).limit(200).all()
+        # 优先绑定当前数据库已出现的 doc_id，避免跨库误修复
+        graph_service = get_rag_service().graph_service
+        db_doc_id_rows = graph_service.execute_query(
+            """
+            MATCH (d:Document)
+            WHERE d.doc_id IS NOT NULL
+            RETURN DISTINCT d.doc_id AS doc_id
+            LIMIT 5000
+            """,
+            {},
+            database=db_name,
+        )
+        scoped_doc_ids = {
+            str(row.get('doc_id')).strip()
+            for row in (db_doc_id_rows or [])
+            if row and row.get('doc_id') is not None and str(row.get('doc_id')).strip()
+        }
+
+        source_chunks_all = db.session.query(DocumentChunk).order_by(DocumentChunk.created_at.asc()).limit(5000).all()
+        source_docs_all = db.session.query(Document).order_by(Document.created_at.asc()).limit(200).all()
+
+        if scoped_doc_ids:
+            source_chunks = [c for c in source_chunks_all if str(c.doc_id) in scoped_doc_ids]
+            source_docs = [d for d in source_docs_all if str(d.doc_id) in scoped_doc_ids]
+            if not source_chunks:
+                source_chunks = source_chunks_all
+            if not source_docs:
+                source_docs = source_docs_all
+        else:
+            source_chunks = source_chunks_all
+            source_docs = source_docs_all
+
+        if neo4j_only:
+            source_chunks = []
+            source_docs = []
+            repaired['notes'].append('已启用 neo4j_only：跳过 kb_* 源表，仅使用 Neo4j 数据修复')
+
+        # Neo4j Chunk 回退源（当 kb_* 源表不可用时）
+        neo_chunks = graph_service.execute_query(
+            """
+            MATCH (c:Chunk)
+            RETURN elementId(c) AS neo_id,
+                   c.doc_id AS doc_id,
+                   c.idx AS chunk_index,
+                   c.text AS content,
+                   c.vec_id AS vec_id
+            LIMIT $limit
+            """,
+            {"limit": max_neo_chunks},
+            database=db_name,
+        ) or []
+
+        # 查询实体节点数（纯实体型 KG 向量修复的判断依据）
+        entity_nodes_count_row = graph_service.execute_query_single(
+            "MATCH (n) WHERE NOT n:Chunk AND NOT n:Document RETURN COUNT(n) AS count",
+            {},
+            database=db_name,
+        )
+        entity_nodes_count = int((entity_nodes_count_row or {}).get('count', 0))
+        max_entity_limit = int(payload.get('max_entity_limit') or 50000)
+        if max_entity_limit <= 0:
+            max_entity_limit = 50000
 
         if 'vector' in targets:
             if source_chunks:
-                from langchain_core.documents import Document as LCDocument
-                from app.services.embedding import EmbeddingService
+                try:
+                    from langchain_core.documents import Document as LCDocument
+                    from app.services.embedding import EmbeddingService
 
-                docs = []
-                for chunk in source_chunks:
-                    content = (chunk.content or '').strip()
-                    if not content:
-                        continue
-                    docs.append(LCDocument(
-                        page_content=content,
-                        metadata={
-                            'doc_id': str(chunk.doc_id),
-                            'chunk_index': chunk.chunk_index,
-                            'repair': True,
-                        }
-                    ))
+                    docs = []
+                    for chunk in source_chunks:
+                        content = (chunk.content or '').strip()
+                        if not content:
+                            continue
+                        docs.append(LCDocument(
+                            page_content=content,
+                            metadata={
+                                'doc_id': str(chunk.doc_id),
+                                'chunk_index': chunk.chunk_index,
+                                'repair': True,
+                                'database': db_name,
+                            }
+                        ))
 
-                if docs:
-                    emb = EmbeddingService()
-                    collection = os.getenv('PGVECTOR_COLLECTION', 'graphrag_collection')
-                    emb.add_documents(docs, collection)
-                    repaired['vector_repaired'] = True
-                    repaired['vector_docs_upserted'] = len(docs)
-                else:
-                    repaired['notes'].append('无可用 chunk 文本用于向量修复')
-            else:
-                repaired['notes'].append('缺少源 chunk，无法修复向量')
+                    if docs:
+                        emb = EmbeddingService()
+                        collection = _vector_collection_for_database(db_name)
+                        emb.add_documents(docs, collection)
+                        repaired['vector_repaired'] = True
+                        repaired['vector_docs_upserted'] = len(docs)
+                    else:
+                        repaired['notes'].append('无可用 chunk 文本用于向量修复')
+                except Exception as vector_error:
+                    repaired['vector_error'] = str(vector_error)
+                    repaired['notes'].append('向量修复失败，已跳过并继续执行其他修复项')
+            elif neo_chunks:
+                try:
+                    vector_docs_upserted = 0
+                    use_db_ctx = hasattr(svc, '_use_database')
+                    vector_store_getter = getattr(svc, '_get_vector_store', None)
 
-        if 'neo4j' in targets and svc and hasattr(svc, 'ingest_text'):
-            reingested = 0
-            use_db_ctx = hasattr(svc, '_use_database')
+                    if not callable(vector_store_getter):
+                        raise RuntimeError('GraphRAG service missing _get_vector_store')
 
-            for doc in source_docs:
-                content = (doc.content or '').strip()
-                if not content:
-                    continue
-                if use_db_ctx:
-                    with svc._use_database(db_name):
-                        svc.ingest_text(str(doc.doc_id), content, filename=doc.filename)
-                else:
-                    svc.ingest_text(str(doc.doc_id), content, filename=doc.filename)
-                reingested += 1
-
-            if reingested == 0 and source_chunks:
-                # 回退：按 doc_id 聚合 chunk 文本重建 Neo4j
-                chunks_by_doc: Dict[str, List[str]] = {}
-                for chunk in source_chunks:
-                    key = str(chunk.doc_id)
-                    chunks_by_doc.setdefault(key, []).append(chunk.content or '')
-
-                for doc_id, texts in list(chunks_by_doc.items())[:80]:
-                    merged = '\n'.join([t for t in texts if t.strip()][:20]).strip()
-                    if not merged:
-                        continue
                     if use_db_ctx:
                         with svc._use_database(db_name):
-                            svc.ingest_text(doc_id, merged, filename=f'repair_{doc_id}')
-                    else:
-                        svc.ingest_text(doc_id, merged, filename=f'repair_{doc_id}')
-                    reingested += 1
+                            vector_store, _ = svc._get_vector_store(database=db_name)
+                            if not vector_store or not hasattr(vector_store, 'add_texts'):
+                                raise RuntimeError('Vector store not available for Neo4j fallback repair')
 
-            repaired['neo4j_repaired'] = reingested > 0
-            repaired['neo4j_docs_reingested'] = reingested
-            if reingested == 0:
-                repaired['notes'].append('缺少可用源文本，无法重建 Neo4j')
+                            for row in neo_chunks:
+                                content = str((row or {}).get('content') or '').strip()
+                                if not content:
+                                    continue
+
+                                neo_id = str((row or {}).get('neo_id') or '').strip()
+                                vec_id = str((row or {}).get('vec_id') or '').strip()
+                                if not vec_id:
+                                    vec_id = f"chunk_{neo_id}"
+
+                                vector_store.add_texts(
+                                    [content],
+                                    metadatas=[{
+                                        'doc_id': str((row or {}).get('doc_id') or ''),
+                                        'chunk_index': (row or {}).get('chunk_index'),
+                                        'neo_node_id': neo_id,
+                                        'repair': True,
+                                        'database': db_name,
+                                    }],
+                                    ids=[vec_id],
+                                )
+                                vector_docs_upserted += 1
+
+                                if not (row or {}).get('vec_id'):
+                                    graph_service.execute_query(
+                                        "MATCH (c:Chunk) WHERE elementId(c) = $eid SET c.vec_id = $vec",
+                                        {'eid': neo_id, 'vec': vec_id},
+                                        database=db_name,
+                                    )
+                    else:
+                        vector_store, _ = svc._get_vector_store(database=db_name)
+                        if not vector_store or not hasattr(vector_store, 'add_texts'):
+                            raise RuntimeError('Vector store not available for Neo4j fallback repair')
+
+                        for row in neo_chunks:
+                            content = str((row or {}).get('content') or '').strip()
+                            if not content:
+                                continue
+
+                            neo_id = str((row or {}).get('neo_id') or '').strip()
+                            vec_id = str((row or {}).get('vec_id') or '').strip()
+                            if not vec_id:
+                                vec_id = f"chunk_{neo_id}"
+
+                            vector_store.add_texts(
+                                [content],
+                                metadatas=[{
+                                    'doc_id': str((row or {}).get('doc_id') or ''),
+                                    'chunk_index': (row or {}).get('chunk_index'),
+                                    'neo_node_id': neo_id,
+                                    'repair': True,
+                                    'database': db_name,
+                                }],
+                                ids=[vec_id],
+                            )
+                            vector_docs_upserted += 1
+
+                            if not (row or {}).get('vec_id'):
+                                graph_service.execute_query(
+                                    "MATCH (c:Chunk) WHERE elementId(c) = $eid SET c.vec_id = $vec",
+                                    {'eid': neo_id, 'vec': vec_id},
+                                    database=db_name,
+                                )
+
+                    repaired['vector_repaired'] = vector_docs_upserted > 0
+                    repaired['vector_docs_upserted'] = vector_docs_upserted
+                    if vector_docs_upserted == 0:
+                        repaired['notes'].append('Neo4j Chunk 文本为空，未写入向量')
+                except Exception as vector_error:
+                    repaired['vector_error'] = str(vector_error)
+                    repaired['notes'].append('Neo4j 回退向量修复失败')
+            elif entity_nodes_count > 0:
+                # Level 3: 纯实体型 KG — 排除 Community 节点，分页拉取（每页 2000 条）
+                try:
+                    vector_store_getter = getattr(svc, '_get_vector_store', None)
+                    if not callable(vector_store_getter):
+                        repaired['notes'].append('GraphRAG 服务不支持 _get_vector_store，实体向量化跳过')
+                    else:
+                        if hasattr(svc, '_use_database'):
+                            with svc._use_database(db_name):
+                                vector_store, _ = svc._get_vector_store(database=db_name)
+                        else:
+                            vector_store, _ = svc._get_vector_store(database=db_name)
+
+                        if not (vector_store and hasattr(vector_store, 'add_texts')):
+                            repaired['notes'].append('向量存储不可用，实体向量化跳过')
+                        else:
+                            # 先删除旧向量，避免重复进行导致统计超过 100%
+                            collection_name = _vector_collection_for_database(db_name)
+                            try:
+                                db.session.execute(
+                                    text("""
+                                        DELETE FROM kg_pg_embedding
+                                        WHERE collection_id = (
+                                            SELECT uuid FROM kg_pg_collection WHERE name = :name LIMIT 1
+                                        )
+                                    """),
+                                    {"name": collection_name},
+                                )
+                                db.session.commit()
+                                repaired['notes'].append(f'已清空旧向量（collection: {collection_name}）')
+                            except Exception as del_err:
+                                db.session.rollback()
+                                repaired['notes'].append(f'清除旧向量失败（继续写入）: {del_err}')
+
+                            page_size = 2000
+                            skip = 0
+                            entity_added = 0
+                            while True:
+                                if skip >= max_entity_limit:
+                                    break
+                                # 同时拉取直接关系（每节点取 Top-10），用于丰富向量文本
+                                entity_rows = graph_service.execute_query(
+                                    """
+                                    MATCH (n)
+                                    WHERE NOT n:Chunk AND NOT n:Document AND NOT n:Community
+                                    OPTIONAL MATCH (n)-[r]->(m)
+                                    WHERE NOT m:Chunk AND NOT m:Document AND NOT m:Community
+                                    WITH n, labels(n) AS node_labels, properties(n) AS props,
+                                         elementId(n) AS neo_id,
+                                         collect({t: type(r), n: coalesce(m.name, m.id, '')})[0..10] AS rels
+                                    RETURN node_labels, props, neo_id, rels
+                                    ORDER BY neo_id
+                                    SKIP $skip LIMIT $page_size
+                                    """,
+                                    {"skip": skip, "page_size": page_size},
+                                    database=db_name,
+                                ) or []
+                                if not entity_rows:
+                                    break
+                                skip += len(entity_rows)
+
+                                batch_texts, batch_metas, batch_ids = [], [], []
+                                for row in entity_rows:
+                                    props = (row or {}).get('props') or {}
+                                    node_labels = (row or {}).get('node_labels') or []
+                                    neo_id = str((row or {}).get('neo_id') or '')
+                                    rels = (row or {}).get('rels') or []
+                                    if not isinstance(props, dict):
+                                        continue
+                                    name = (
+                                        props.get('name') or props.get('title') or
+                                        props.get('id') or props.get('node_id') or ''
+                                    )
+                                    desc = (
+                                        props.get('description') or props.get('text') or
+                                        props.get('intro') or ''
+                                    )
+                                    parts = []
+                                    if name:
+                                        parts.append(f"名称：{name}")
+                                    if desc:
+                                        parts.append(f"描述：{str(desc)[:300]}")
+                                    if not parts:
+                                        for k, v in list(props.items())[:5]:
+                                            if v is not None and k not in ('embedding', 'vec_id', 'id', 'community_id'):
+                                                parts.append(f"{k}：{v}")
+                                    if not parts:
+                                        continue
+
+                                    # 按关系类型分组，每种类型取 Top-5 目标节点名
+                                    if rels:
+                                        rel_groups: dict = {}
+                                        for rel in rels:
+                                            if not isinstance(rel, dict):
+                                                continue
+                                            rt = rel.get('t') or ''
+                                            rn = rel.get('n') or ''
+                                            if rt and rn:
+                                                rel_groups.setdefault(rt, [])
+                                                if len(rel_groups[rt]) < 5:
+                                                    rel_groups[rt].append(rn)
+                                        for rel_type, targets in list(rel_groups.items())[:6]:
+                                            # 关系类型名转中文展示（尽量可读）
+                                            parts.append(f"{rel_type}：{'、'.join(targets)}")
+
+                                    text = f"[{','.join(node_labels)}] " + "；".join(parts)
+                                    batch_texts.append(text.strip())
+                                    batch_metas.append({
+                                        'neo_node_id': neo_id,
+                                        'labels': ','.join(node_labels),
+                                        'database': db_name,
+                                        'entity_name': str(name),
+                                        'repair': True,
+                                    })
+                                    batch_ids.append(f"entity_{neo_id}")
+
+                                if batch_texts:
+                                    batch_size = 200
+                                    for i in range(0, len(batch_texts), batch_size):
+                                        vector_store.add_texts(
+                                            batch_texts[i:i + batch_size],
+                                            metadatas=batch_metas[i:i + batch_size],
+                                            ids=batch_ids[i:i + batch_size],
+                                        )
+                                    entity_added += len(batch_texts)
+
+                            if entity_added > 0:
+                                repaired['vector_repaired'] = True
+                                repaired['vector_docs_upserted'] = entity_added
+                                repaired['notes'].append(
+                                    f'已对 {entity_added} 个实体节点完成向量化（知识图谱实体模式）'
+                                )
+                            else:
+                                repaired['notes'].append('实体节点无有效文本属性，无法向量化')
+                except Exception as entity_vec_err:
+                    repaired['vector_error'] = str(entity_vec_err)
+                    repaired['notes'].append('实体向量化出错')
+            else:
+                repaired['notes'].append('缺少源 chunk 且无实体节点，无法修复向量')
+
+        if 'neo4j' in targets and svc and hasattr(svc, 'ingest_text'):
+            if entity_nodes_count > 0 and not source_docs:
+                # 纯实体型 KG：实体已存在，通过向量化路径处理即可
+                repaired['notes'].append('知识图谱实体库结构完整，无需重建文档节点，已跳过 Neo4j 修复')
+                repaired['neo4j_repaired'] = True
+                repaired['neo4j_docs_reingested'] = 0
+            else:
+                reingested = 0
+                use_db_ctx = hasattr(svc, '_use_database')
+
+                try:
+                    for doc in source_docs:
+                        content = (doc.content or '').strip()
+                        if not content:
+                            continue
+                        if use_db_ctx:
+                            with svc._use_database(db_name):
+                                svc.ingest_text(str(doc.doc_id), content, filename=doc.filename)
+                        else:
+                            svc.ingest_text(str(doc.doc_id), content, filename=doc.filename)
+                        reingested += 1
+
+                    if reingested == 0 and source_chunks:
+                        # 回退：按 doc_id 聚合 chunk 文本重建 Neo4j
+                        chunks_by_doc: Dict[str, List[str]] = {}
+                        for chunk in source_chunks:
+                            key = str(chunk.doc_id)
+                            chunks_by_doc.setdefault(key, []).append(chunk.content or '')
+
+                        for doc_id, texts in list(chunks_by_doc.items())[:80]:
+                            merged = '\n'.join([t for t in texts if t.strip()][:20]).strip()
+                            if not merged:
+                                continue
+                            if use_db_ctx:
+                                with svc._use_database(db_name):
+                                    svc.ingest_text(doc_id, merged, filename=f'repair_{doc_id}')
+                            else:
+                                svc.ingest_text(doc_id, merged, filename=f'repair_{doc_id}')
+                            reingested += 1
+
+                except Exception as neo_error:
+                    repaired['neo4j_error'] = str(neo_error)
+
+                repaired['neo4j_repaired'] = reingested > 0
+                repaired['neo4j_docs_reingested'] = reingested
+                if reingested == 0:
+                    repaired['notes'].append('缺少可用源文本，无法重建 Neo4j')
+
+        if 'neo4j' in targets and (not svc or not hasattr(svc, 'ingest_text')):
+            repaired['notes'].append('当前服务不支持 ingest_text，已跳过 Neo4j 修复')
 
         return jsonify({"success": True, "data": {"database": db_name, **repaired}})
     except Exception as e:
         logger.error(f"数据库自动修复失败: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@kg_bp.route('/databases/<string:db_name>/vectors/reconcile', methods=['POST'])
+def reconcile_database_vectors(db_name: str):
+    """收口历史全局向量：支持 keep/migrate/delete 三种策略。"""
+    try:
+        if not db_name or db_name.strip().lower() == 'system':
+            return jsonify({"success": False, "error": "非法数据库名称"}), 400
+
+        payload = request.json or {}
+        strategy = str(payload.get('strategy', 'migrate')).strip().lower()
+        source_collection = payload.get('source_collection')
+
+        svc = getattr(current_app, 'graphrag_service', None) or get_rag_service()
+        if not svc or not hasattr(svc, 'reconcile_legacy_vectors'):
+            return jsonify({"success": False, "error": "GraphRAG service unavailable"}), 500
+
+        result = svc.reconcile_legacy_vectors(
+            database=db_name,
+            strategy=strategy,
+            source_collection=source_collection,
+        )
+        if not result.get('success'):
+            return jsonify({"success": False, "error": result.get('error', '收口失败'), "data": result}), 500
+
+        return jsonify({"success": True, "data": result})
+    except Exception as e:
+        logger.error(f"向量收口失败: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
 
@@ -1048,7 +1486,7 @@ def graph_rag_qa():
     try:
         data = request.json or {}
         question = data.get('question') or data.get('q') or ''
-        top_k = int(data.get('top_k', 5))
+        top_k = int(data.get('top_k', 20))
 
         if not question:
             return jsonify({"success": False, "error": "question is required"}), 400
@@ -1071,12 +1509,13 @@ def get_visualize_data():
     """获取图谱可视化数据
     
     Query Parameters:
-        limit: 返回节点数量限制 (默认 50)
+        limit: 返回节点数量限制 (默认 1000，最大 5000)
         doc_id: 文档 ID，按文档筛选图谱范围 (可选)
         community_id: 社区 ID，按社区筛选图谱范围 (可选)
     """
     try:
-        limit = request.args.get('limit', 50, type=int)
+        requested_limit = request.args.get('limit', 1000, type=int)
+        limit = max(100, min(5000, requested_limit or 1000))
         doc_id = request.args.get('doc_id', None, type=str)
         community_id = request.args.get('community_id', None, type=int)
         database = request.args.get('database', None, type=str)
@@ -1667,13 +2106,15 @@ def graphrag_local_search():
     try:
         data = request.json or {}
         question = data.get('question') or data.get('q') or ''
-        top_k = int(data.get('top_k', 5))
+        top_k = int(data.get('top_k', 20))
         include_community = data.get('include_community', True)
         doc_id = data.get('doc_id')
-        database = data.get('database')
+        database = (data.get('database') or '').strip()
         
         if not question:
             return jsonify({"success": False, "error": "question is required"}), 400
+        if not database:
+            return jsonify({"success": False, "error": "database is required"}), 400
         
         svc = get_graphrag_service()
         if not svc:
@@ -1702,10 +2143,12 @@ def graphrag_global_search():
         max_communities = int(data.get('max_communities', 10))
         include_intermediate = data.get('include_intermediate', False)
         doc_id = data.get('doc_id')
-        database = data.get('database')
+        database = (data.get('database') or '').strip()
         
         if not question:
             return jsonify({"success": False, "error": "question is required"}), 400
+        if not database:
+            return jsonify({"success": False, "error": "database is required"}), 400
         
         svc = get_graphrag_service()
         if not svc:
@@ -1746,10 +2189,12 @@ def graphrag_hybrid_search():
         chat_history = data.get('chat_history', [])  # 对话历史
         session_id = data.get('session_id') # 可选：会话 ID，用于持久化
         doc_id = data.get('doc_id')  # 可选：文档 ID，用于限定检索范围
-        database = data.get('database')  # 可选：Neo4j database
+        database = (data.get('database') or '').strip()  # 必填：Neo4j database
         
         if not question:
             return jsonify({"success": False, "error": "question is required"}), 400
+        if not database:
+            return jsonify({"success": False, "error": "database is required"}), 400
         
         if strategy not in ('auto', 'local', 'global', 'both'):
             return jsonify({"success": False, "error": "invalid strategy, must be: auto, local, global, both"}), 400
@@ -1831,20 +2276,24 @@ def graphrag_detect_communities():
     try:
         data = request.json or {}
         write_property = data.get('write_property', True)
-        database = data.get('database')
+        database = (data.get('database') or '').strip()
+        if not database:
+            return jsonify({"success": False, "error": "database is required"}), 400
         
         svc = get_graphrag_service()
         if not svc:
             return jsonify({"success": False, "error": "GraphRAG service unavailable"}), 500
         
+        mode = data.get('mode', 'auto')
+
         if not hasattr(svc, 'detect_communities'):
             return jsonify({"success": False, "error": "detect_communities method not available"}), 500
         
         if hasattr(svc, '_use_database'):
             with svc._use_database(database):
-                result = svc.detect_communities(write_property=write_property)
+                result = svc.detect_communities(write_property=write_property, mode=mode)
         else:
-            result = svc.detect_communities(write_property=write_property)
+            result = svc.detect_communities(write_property=write_property, mode=mode)
         return jsonify({"success": True, "data": result})
     
     except Exception as e:
@@ -1859,7 +2308,9 @@ def graphrag_generate_reports():
     """生成所有社区的 LLM 摘要报告"""
     try:
         data = request.json or {}
-        database = data.get('database')
+        database = (data.get('database') or '').strip()
+        if not database:
+            return jsonify({"success": False, "error": "database is required"}), 400
         svc = get_graphrag_service()
         if not svc:
             return jsonify({"success": False, "error": "GraphRAG service unavailable"}), 500
@@ -1885,6 +2336,10 @@ def graphrag_generate_reports():
 def get_community_details(community_id: int):
     """获取指定社区的详细信息"""
     try:
+        database = (request.args.get('database') or '').strip()
+        if not database:
+            return jsonify({"success": False, "error": "database is required"}), 400
+
         svc = get_graphrag_service()
         if not svc:
             return jsonify({"success": False, "error": "GraphRAG service unavailable"}), 500
@@ -1892,7 +2347,8 @@ def get_community_details(community_id: int):
         if not hasattr(svc, 'get_community_entities'):
             return jsonify({"success": False, "error": "get_community_entities method not available"}), 500
         
-        entities = svc.get_community_entities(community_id)
+        with svc._use_database(database):
+            entities = svc.get_community_entities(community_id)
         return jsonify({
             "success": True, 
             "data": {
@@ -1904,6 +2360,32 @@ def get_community_details(community_id: int):
     
     except Exception as e:
         logger.error(f"Get community details failed: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@kg_bp.route('/cleanup', methods=['POST'])
+def cleanup_all_orphaned_data():
+    """清理所有孤立数据：同时清理孤立向量和孤立Chunk"""
+    try:
+        payload = request.get_json(silent=True) or {}
+        database = (payload.get('database') or '').strip() or None
+
+        svc = getattr(current_app, 'graphrag_service', None) or get_rag_service()
+        if not svc:
+            rag_service = get_rag_service()
+            if hasattr(rag_service, 'graph_service'):
+                svc = rag_service.graph_service
+        
+        if not svc:
+            return jsonify({"success": False, "error": "GraphRAG service unavailable"}), 500
+            
+        if not hasattr(svc, 'cleanup_all_orphaned_data'):
+            return jsonify({"success": False, "error": "cleanup_all_orphaned_data method not available"}), 500
+
+        result = svc.cleanup_all_orphaned_data(database=database)
+        return jsonify({"success": True, "data": result})
+    except Exception as e:
+        logger.error(f"清理孤立数据失败: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
 
@@ -1928,6 +2410,54 @@ def cleanup_vectors():
         return jsonify({"success": True, "data": result})
     except Exception as e:
         logger.error(f"清理孤立向量失败: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@kg_bp.route('/chunks/cleanup-orphaned', methods=['POST'])
+def cleanup_orphaned_chunks():
+    """清理孤立Chunk（没有向量的Chunk）"""
+    try:
+        svc = getattr(current_app, 'graphrag_service', None) or get_rag_service()
+        if not svc:
+            rag_service = get_rag_service()
+            if hasattr(rag_service, 'graph_service'):
+                svc = rag_service.graph_service
+        
+        if not svc:
+            return jsonify({"success": False, "error": "GraphRAG service unavailable"}), 500
+        
+        if not hasattr(svc, 'cleanup_orphaned_chunks'):
+            return jsonify({"success": False, "error": "cleanup_orphaned_chunks method not available"}), 500
+
+        result = svc.cleanup_orphaned_chunks()
+        return jsonify({"success": True, "data": result})
+    except Exception as e:
+        logger.error(f"清理孤立Chunk失败: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@kg_bp.route('/chunks/status', methods=['GET'])
+def get_chunks_vector_status():
+    """获取Chunk与向量的关联状态"""
+    try:
+        database = (request.args.get('database') or '').strip() or None
+
+        svc = getattr(current_app, 'graphrag_service', None) or get_rag_service()
+        if not svc:
+            rag_service = get_rag_service()
+            if hasattr(rag_service, 'graph_service'):
+                svc = rag_service.graph_service
+        
+        if not svc:
+            return jsonify({"success": False, "error": "GraphRAG service unavailable"}), 500
+        
+        if not hasattr(svc, 'cleanup_chunks_without_vectors'):
+            return jsonify({"success": False, "error": "cleanup_chunks_without_vectors method not available"}), 500
+
+        result = svc.cleanup_chunks_without_vectors(database=database)
+        return jsonify({"success": True, "data": result})
+    except Exception as e:
+        logger.error(f"获取Chunk状态失败: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
 

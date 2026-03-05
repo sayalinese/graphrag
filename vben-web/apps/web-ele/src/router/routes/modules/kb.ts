@@ -14,7 +14,7 @@ const kbRoutes: RouteRecordRaw[] = [
       title: $t('page.kb.title'),
       icon: 'lucide:book-open',
       order: 310,
-      hideInMenu: true,
+      hideInMenu: false,
     },
     children: KB_ROUTES,
   },

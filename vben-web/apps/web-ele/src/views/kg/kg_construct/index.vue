@@ -82,12 +82,19 @@ const integrity = reactive({
   vectorMissing: false,
   sourceMissing: false,
   neoMissing: false,
+  orphanedChunks: false,
+  communityMissing: false,
   counts: {
     neo_nodes: 0,
     neo_edges: 0,
     source_docs: 0,
     source_chunks: 0,
+    graph_chunks: 0,
     vectors: 0,
+    orphaned_chunks: 0,
+    entity_nodes: 0,
+    vector_coverage: 1.0,
+    communities: 0,
   },
 });
 
@@ -108,7 +115,12 @@ const fetchDatabases = async () => {
       databaseOptions.value = result.data.databases.map((db: any) => ({
           label: db.name || db,
           value: db.name || db,
-        }))
+        }));
+
+      if (!selectedDatabase.value && databaseOptions.value.length > 0) {
+        const defaultDb = result.data.databases.find((db: any) => Boolean(db?.default));
+        selectedDatabase.value = (defaultDb?.name || defaultDb) || databaseOptions.value[0].value;
+      }
     }
   } catch (error) {
     console.warn('获取数据库列表失败:', error);
@@ -145,12 +157,19 @@ const checkIntegrity = async () => {
     integrity.vectorMissing = Boolean(status.vector_missing);
     integrity.sourceMissing = Boolean(status.source_missing);
     integrity.neoMissing = Boolean(status.neo_missing);
+    integrity.orphanedChunks = Boolean(status.orphaned_chunks);
+    integrity.communityMissing = Boolean(status.community_missing);
     integrity.counts = {
       neo_nodes: payload.counts?.neo_nodes || 0,
       neo_edges: payload.counts?.neo_edges || 0,
       source_docs: payload.counts?.source_docs || 0,
       source_chunks: payload.counts?.source_chunks || 0,
+      graph_chunks: payload.counts?.graph_chunks || 0,
       vectors: payload.counts?.vectors || 0,
+      orphaned_chunks: payload.counts?.orphaned_chunks || 0,
+      entity_nodes: payload.counts?.entity_nodes || 0,
+      vector_coverage: payload.counts?.vector_coverage ?? 1.0,
+      communities: payload.counts?.communities || 0,
     };
   } catch (error) {
     ElMessage.error('完整性检测失败');
@@ -165,21 +184,43 @@ const repairIntegrity = async () => {
   }
   repairing.value = true;
   try {
+    if (!integrity.checked) {
+      await checkIntegrity();
+    }
+
     const targets: string[] = [];
     if (integrity.vectorMissing) targets.push('vector');
     if (integrity.neoMissing) targets.push('neo4j');
-    if (!targets.length) {
-      targets.push('vector', 'neo4j');
+    if (integrity.sourceMissing && !targets.includes('neo4j')) targets.push('neo4j');
+    if (!targets.length && !integrity.communityMissing) {
+      // 全部指标健康，无需修复
+      ElMessage.success('数据库生命周期完整，无需修复');
+      repairing.value = false;
+      return;
     }
-    const res = await repairDatabaseIntegrity(selectedDatabase.value, targets);
-    const data = res.data || res;
-    if (data.success) {
-      ElMessage.success('自动修复任务已执行');
-      await checkIntegrity();
-      await initGraph();
-    } else {
-      throw new Error(data.error || '修复失败');
+    // 先执行向量/Neo4j修复
+    if (targets.length > 0) {
+      const res = await repairDatabaseIntegrity(selectedDatabase.value, targets);
+      const data = res.data || res;
+      if (!data.success) throw new Error(data.error || '修复失败');
+      const repairedDb = data.data?.database || selectedDatabase.value;
+      addLog(`修复完成（目标库：${repairedDb}）`);
     }
+    // 社区划分修复
+    if (integrity.communityMissing) {
+      addLog('社区划分缺失，开始执行 Leiden 社区检测...');
+      const cRes = await detectCommunities(true, selectedDatabase.value);
+      const cData = cRes.data || cRes;
+      if (cData.success) {
+        const cd = cData.data || {};
+        addLog(`社区检测完成：共 ${cd.total_communities ?? 0} 个社区，模式=${cd.mode_used ?? 'auto'}，模块度=${(cd.modularity ?? 0).toFixed(4)}`);
+      } else {
+        addLog(`社区检测失败: ${cData.error || '未知错误'}`);
+      }
+    }
+    ElMessage.success(`自动修复任务已执行（目标库：${selectedDatabase.value}）`);
+    await checkIntegrity();
+    await initGraph();
   } catch (error) {
     ElMessage.error('自动修复失败');
     console.error(error);
@@ -346,7 +387,7 @@ const handleTextBuild = async () => {
     steps.value[1].status = 'process';
     addLog('正在执行社区检测...');
     addLog('⏳ 这可能需要 1-5 分钟，请勿关闭页面');
-    const detectRes = await detectCommunities(true, selectedDatabase.value || undefined);
+    const detectRes = await detectCommunities(true, selectedDatabase.value);
     const detectData = detectRes.data || detectRes;
     
     if (!detectData.success) {
@@ -362,7 +403,7 @@ const handleTextBuild = async () => {
     steps.value[2].status = 'process';
     addLog('正在生成社区报告...');
     addLog('⏳ 这可能需要 1-5 分钟，请勿关闭页面');
-    const reportRes = await generateCommunityReports(selectedDatabase.value || undefined);
+    const reportRes = await generateCommunityReports(selectedDatabase.value);
     const reportData = reportRes.data || reportRes;
     
     if (!reportData.success) {
@@ -437,7 +478,7 @@ const handleSchemaBuild = async () => {
     // Step 2: 社区检测 (复用原有逻辑)
     steps.value[1].status = 'process';
     addLog('正在执行社区检测...');
-    const detectRes = await detectCommunities(true, selectedDatabase.value || undefined);
+    const detectRes = await detectCommunities(true, selectedDatabase.value);
     const detectData = detectRes.data || detectRes;
     
     if (!detectData.success) {
@@ -452,7 +493,7 @@ const handleSchemaBuild = async () => {
     // Step 3: 报告生成 (复用原有逻辑)
     steps.value[2].status = 'process';
     addLog('正在生成社区报告...');
-    const reportRes = await generateCommunityReports(selectedDatabase.value || undefined);
+    const reportRes = await generateCommunityReports(selectedDatabase.value);
     const reportData = reportRes.data || reportRes;
     
     if (!reportData.success) {
@@ -654,9 +695,30 @@ onUnmounted(() => {
               <span class="h-2.5 w-2.5 rounded-full" :class="integrity.checked ? ((integrity.sourceMissing || integrity.neoMissing) ? 'bg-red-500' : 'bg-green-500') : 'bg-gray-600'"></span>
               源数据/Neo4j
             </span>
+            <span class="inline-flex items-center gap-2 text-xs text-gray-300">
+              <span class="h-2.5 w-2.5 rounded-full" :class="integrity.checked ? (integrity.orphanedChunks ? 'bg-orange-500' : 'bg-green-500') : 'bg-gray-600'"></span>
+              孤立Chunk
+            </span>
+            <span class="inline-flex items-center gap-2 text-xs text-gray-300">
+              <span class="h-2.5 w-2.5 rounded-full" :class="integrity.checked ? (integrity.communityMissing ? 'bg-red-500' : 'bg-green-500') : 'bg-gray-600'"></span>
+              社区划分
+            </span>
           </div>
           <div class="text-[11px] text-gray-500" v-if="integrity.checked">
-            N: {{ integrity.counts.neo_nodes }} / E: {{ integrity.counts.neo_edges }} / Chunk: {{ integrity.counts.source_chunks }} / Vec: {{ integrity.counts.vectors }}
+            N: {{ integrity.counts.neo_nodes }} / E: {{ integrity.counts.neo_edges }} / Chunk: {{ integrity.counts.source_chunks }} / GraphChunk: {{ integrity.counts.graph_chunks }} / Vec: {{ integrity.counts.vectors }}
+            <div v-if="integrity.counts.entity_nodes > 0" class="mt-1">
+              <span :class="integrity.vectorMissing ? 'text-yellow-400' : 'text-green-400'">
+                实体向量覆盖率: {{ (integrity.counts.vector_coverage * 100).toFixed(1) }}%
+                ({{ integrity.counts.vectors }}/{{ integrity.counts.entity_nodes }})
+              </span>
+            </div>
+            <div class="mt-1" :class="integrity.communityMissing ? 'text-red-400' : 'text-green-400'">
+              社区数量: {{ integrity.counts.communities }}
+              <span v-if="integrity.communityMissing">⚠️ 社区划分缺失</span>
+            </div>
+            <div v-if="integrity.counts.orphaned_chunks > 0" class="text-orange-400 mt-1">
+              ⚠️ 检测到 {{ integrity.counts.orphaned_chunks }} 个孤立Chunk（没有对应向量或Document）
+            </div>
           </div>
           <div class="grid grid-cols-2 gap-2">
             <el-button size="small" @click="checkIntegrity">检测</el-button>

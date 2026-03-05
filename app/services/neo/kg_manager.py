@@ -318,7 +318,7 @@ class KGManager:
             MATCH (n1)-[r*0..1]->(n2)
             WHERE n1.name = n2.name AND n1 <> n2
             WITH n1, n2
-            WHERE id(n1) < id(n2)
+            WHERE elementId(n1) < elementId(n2)
             CALL apoc.refactor.mergeNodes([n1, n2])
             YIELD node
             RETURN count(node) as merged_count

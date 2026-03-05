@@ -82,6 +82,7 @@ class GraphRAGService:
         self._database_ctx: ContextVar[Optional[str]] = ContextVar('neo4j_database_ctx', default=None)
         self.pg_conn = pg_conn
         self.pg_collection = pg_collection
+        self._vector_stores: Dict[str, Any] = {}
         
         # 使用 EmbeddingService（支持 OpenAI 兼容 API，如 BAAI/bge-m3）
         try:
@@ -120,11 +121,9 @@ class GraphRAGService:
                 self.embed_model = None
 
         try:
-            self.vector_store = PGVector(
-                connection_string=pg_conn,
-                collection_name=pg_collection,
-                embedding_function=self._embedding_wrapper,
-            )
+            self.vector_store = self._build_vector_store(pg_collection)
+            if self.vector_store is not None:
+                self._vector_stores[pg_collection] = self.vector_store
         except Exception as e:  # fallback
             logger.warning(f"初始化 PGVector 失败: {e}")
             self.vector_store = None
@@ -159,6 +158,35 @@ class GraphRAGService:
         if db_name:
             return self.driver.session(database=db_name)
         return self.driver.session()
+
+    def _normalize_database_name(self, database: str) -> str:
+        safe = re.sub(r'[^0-9a-zA-Z_]+', '_', (database or '').strip().lower())
+        return safe.strip('_') or 'default'
+
+    def get_vector_collection_name(self, database: Optional[str] = None) -> str:
+        db_name = (database or self._database_ctx.get() or '').strip()
+        if not db_name:
+            return self.pg_collection
+        return f"{self.pg_collection}__{self._normalize_database_name(db_name)}"
+
+    def _build_vector_store(self, collection_name: str):
+        return PGVector(
+            connection_string=self.pg_conn,
+            collection_name=collection_name,
+            embedding_function=self._embedding_wrapper,
+        )
+
+    def _get_vector_store(self, database: Optional[str] = None):
+        collection_name = self.get_vector_collection_name(database=database)
+        if collection_name in self._vector_stores:
+            return self._vector_stores[collection_name], collection_name
+        try:
+            store = self._build_vector_store(collection_name)
+            self._vector_stores[collection_name] = store
+            return store, collection_name
+        except Exception as e:
+            logger.warning(f"初始化数据库向量集合失败({collection_name}): {e}")
+            return None, collection_name
 
     def embed_text(self, text: str) -> Optional[List[float]]:
         """使用 EmbeddingService 生成文本向量"""
@@ -289,7 +317,7 @@ class GraphRAGService:
                 MERGE (e:Entity {name: $name})
                 ON CREATE SET e.type = $type, e.description = $desc, e.doc_id = $doc_id, e.created_at = datetime()
                 ON MATCH SET e.description = CASE WHEN e.description IS NULL OR e.description = '' THEN $desc ELSE e.description END
-                RETURN elementId(e) as eid, id(e) as nid
+                RETURN elementId(e) as eid, elementId(e) as nid
                 """,
                 {"name": name, "type": etype, "desc": desc, "doc_id": doc_id}
             )
@@ -346,11 +374,13 @@ class GraphRAGService:
         created_entities = []
         created_relations = []
         all_entities = []  # 收集所有实体用于后续社区检测
+        active_db = (self._database_ctx.get() or '').strip() or None
+        vector_store, vector_collection = self._get_vector_store(database=active_db)
 
         with self._session() as sess:
             # create Document node
             doc_res = sess.run(
-                "CREATE (d:Document {doc_id:$doc_id, filename:$filename}) RETURN elementId(d) as eid, id(d) as id",
+                "CREATE (d:Document {doc_id:$doc_id, filename:$filename}) RETURN elementId(d) as eid, elementId(d) as id",
                 {"doc_id": doc_id, "filename": filename},
             )
             doc_row = doc_res.single()
@@ -360,7 +390,7 @@ class GraphRAGService:
                 # 1. 创建 Chunk 节点
                 try:
                     res = sess.run(
-                        "CREATE (c:Chunk {doc_id:$doc_id, idx:$idx, text:$text}) RETURN id(c) as nid",
+                        "CREATE (c:Chunk {doc_id:$doc_id, idx:$idx, text:$text}) RETURN elementId(c) as nid",
                         {"doc_id": doc_id, "idx": idx, "text": chunk},
                     )
                     nid = res.single()["nid"]
@@ -372,7 +402,7 @@ class GraphRAGService:
                 if doc_node_id:
                     try:
                         sess.run(
-                            "MATCH (d:Document), (c:Chunk) WHERE id(d)=$did AND id(c)=$cid CREATE (d)-[:CONTAINS]->(c)",
+                            "MATCH (d:Document), (c:Chunk) WHERE elementId(d)=$did AND elementId(c)=$cid CREATE (d)-[:CONTAINS]->(c)",
                             {"did": doc_node_id, "cid": nid}
                         )
                     except Exception as e:
@@ -394,7 +424,7 @@ class GraphRAGService:
                             # 关联 Chunk -> Entity (MENTIONS)
                             try:
                                 sess.run(
-                                    "MATCH (c:Chunk), (e:Entity) WHERE id(c)=$cid AND id(e)=$eid CREATE (c)-[:MENTIONS]->(e)",
+                                    "MATCH (c:Chunk), (e:Entity) WHERE elementId(c)=$cid AND elementId(e)=$eid CREATE (c)-[:MENTIONS]->(e)",
                                     {"cid": nid, "eid": entity_nid}
                                 )
                             except Exception:
@@ -412,16 +442,18 @@ class GraphRAGService:
                 emb = self.embed_text(chunk)
                 vec_id = f"chunk_{nid}"
 
-                if self.vector_store and emb is not None:
+                if vector_store and emb is not None:
                     try:
-                        if hasattr(self.vector_store, 'add_texts'):
-                            res = self.vector_store.add_texts(
+                        if hasattr(vector_store, 'add_texts'):
+                            res = vector_store.add_texts(
                                 [chunk], 
                                 metadatas=[{
                                     "neo_node_id": str(nid), 
                                     "doc_id": doc_id, 
                                     "kb_id": kb_id, 
                                     "filename": filename,
+                                    "database": active_db,
+                                    "vector_collection": vector_collection,
                                     "entities": json.dumps([e["name"] for e in chunk_entities], ensure_ascii=False)
                                 }], 
                                 ids=[vec_id]
@@ -432,7 +464,7 @@ class GraphRAGService:
 
                 # 5. 写回 vec_id 到 Neo4j Chunk 节点
                 try:
-                    sess.run("MATCH (c) WHERE id(c)=$nid SET c.vec_id=$vec", {"nid": nid, "vec": vec_id})
+                    sess.run("MATCH (c) WHERE elementId(c)=$nid SET c.vec_id=$vec", {"nid": nid, "vec": vec_id})
                 except Exception:
                     pass
 
@@ -531,27 +563,29 @@ class GraphRAGService:
                     continue
             return parsed_docs, parsed_neo_ids
 
-        if self.vector_store:
+        active_db = (self._database_ctx.get() or '').strip() or None
+        vector_store, _ = self._get_vector_store(database=active_db)
+        if vector_store:
             try:
                 # try common search names used by different implementations
                 results = None
                 for fn in ("similarity_search_with_score_by_vector", "similarity_search_by_vector", "similarity_search_with_score", "similarity_search"):
-                    if hasattr(self.vector_store, fn):
+                    if hasattr(vector_store, fn):
                         try:
-                            results = getattr(self.vector_store, fn)(q_emb, k=top_k)
+                            results = getattr(vector_store, fn)(q_emb, k=top_k)
                             break
                         except TypeError:
                             # some APIs expect named args
                             try:
-                                results = getattr(self.vector_store, fn)(q_emb, k=top_k)
+                                results = getattr(vector_store, fn)(q_emb, k=top_k)
                                 break
                             except Exception:
                                 results = None
                 # if still None, try a generic 'search' or 'client' usage
-                if results is None and hasattr(self.vector_store, 'client'):
+                if results is None and hasattr(vector_store, 'client'):
                     try:
                         # many clients expose a query/upsert API; leave as best-effort
-                        results = getattr(self.vector_store, 'client').query(q_emb, top_k)
+                        results = getattr(vector_store, 'client').query(q_emb, top_k)
                     except Exception:
                         results = None
 
@@ -592,7 +626,7 @@ class GraphRAGService:
                                     txt = (d.get('text') or '').strip()
                                     if not txt:
                                         continue
-                                    q = sess2.run('MATCH (c:Chunk) WHERE c.text = $txt RETURN id(c) as nid LIMIT 1', {'txt': txt})
+                                    q = sess2.run('MATCH (c:Chunk) WHERE c.text = $txt RETURN elementId(c) as nid LIMIT 1', {'txt': txt})
                                     r = q.single()
                                     if r and r.get('nid') is not None:
                                         neo_ids.append(r.get('nid'))
@@ -609,7 +643,7 @@ class GraphRAGService:
             with self._session() as sess:
                 try:
                     rows = sess.run(
-                        "MATCH (c) WHERE id(c) IN $ids OPTIONAL MATCH (c)-[r]-(m) RETURN c, collect(r) as rels, collect(m) as mats",
+                        "MATCH (c) WHERE elementId(c) IN $ids OPTIONAL MATCH (c)-[r]-(m) RETURN c, collect(r) as rels, collect(m) as mats",
                         {"ids": neo_ids},
                     )
                     for row in rows:
@@ -644,7 +678,7 @@ class GraphRAGService:
 
     # ========== Phase 3: Local Search (混合搜索) ==========
     
-    def local_search(self, question: str, top_k: int = 5, include_community: bool = True, doc_id: str = None, database: str = None) -> Dict[str, Any]:
+    def local_search(self, question: str, top_k: int = 20, include_community: bool = True, doc_id: str = None, database: str = None) -> Dict[str, Any]:
         """Local Search: 结合实体、关系和向量检索的混合搜索
         
         搜索流程:
@@ -669,77 +703,155 @@ class GraphRAGService:
             "entities": [],
             "relations": [],
             "chunks": [],
-            "community_context": []
+            "community_context": [],
+            "evidence": {
+                "top_chunks": [],
+                "top_entities": [],
+                "top_relations": []
+            }
         }
-        
-        # 1. 向量检索 Chunk（带文档过滤）
-        vector_chunks = self._vector_search_chunks(question, top_k, doc_id=doc_id)
-        result["chunks"] = vector_chunks
+
+        # 1. 第一阶段召回：向量检索更多候选（3x），后续再重排
+        candidate_k = max(top_k * 3, 30)
+        vector_candidates = self._vector_search_chunks(question, candidate_k, doc_id=doc_id, database=database)
         
         # 2. 从问题中提取并匹配实体（带文档过滤）
         matched_entities = self._match_entities_from_question(question, doc_id=doc_id)
         
-        # 3. 从 Chunk 的 MENTIONS 关系找到相关实体
+        # 3. 从向量命中节点展开实体
+        #    路径 A（文本语料库）：Chunk -[:MENTIONS]-> Entity
+        #    路径 B（纯知识图谱）：向量命中节点本身即为 Disease/Drug/Symptom 域节点
         chunk_entity_ids = set()
-        if vector_chunks:
-            chunk_neo_ids = [c.get("neo_id") for c in vector_chunks if c.get("neo_id")]
+        if vector_candidates:
+            chunk_neo_ids = [c.get("neo_id") for c in vector_candidates if c.get("neo_id")]
             if chunk_neo_ids:
                 with self._session() as sess:
+                    # 路径 A：Chunk-MENTIONS（文本语料库）
                     try:
                         res = sess.run("""
                             MATCH (c:Chunk)-[:MENTIONS]->(e:Entity)
-                            WHERE id(c) IN $chunk_ids
-                            RETURN DISTINCT e.name as name, e.type as type, id(e) as neo_id, 
-                                   e.description as description, e.community_id as community_id
+                            WHERE elementId(c) IN $chunk_ids
+                            RETURN DISTINCT e.name AS name, labels(e)[0] AS type,
+                                   elementId(e) AS neo_id,
+                                   coalesce(e.description, e.intro, '') AS description,
+                                   e.community_id AS community_id
                         """, {"chunk_ids": chunk_neo_ids})
                         for row in res:
                             entity_info = {
-                                "name": row["name"],
-                                "type": row["type"],
-                                "neo_id": row["neo_id"],
-                                "description": row["description"],
-                                "community_id": row["community_id"],
-                                "source": "chunk_mention"
+                                "name": row["name"], "type": row["type"],
+                                "neo_id": row["neo_id"], "description": row["description"] or "",
+                                "community_id": row["community_id"], "source": "chunk_mention"
                             }
                             chunk_entity_ids.add(row["neo_id"])
-                            # 避免重复
                             if not any(e["name"] == entity_info["name"] for e in matched_entities):
                                 matched_entities.append(entity_info)
                     except Exception as e:
-                        logger.warning(f"Failed to get entities from chunks: {e}")
+                        logger.warning(f"Chunk-MENTIONS path failed: {e}")
+
+                    # 路径 B：向量命中节点本身就是域节点（纯知识图谱）
+                    try:
+                        res2 = sess.run("""
+                            MATCH (n)
+                            WHERE elementId(n) IN $node_ids
+                              AND NOT n:Chunk AND NOT n:Document AND NOT n:Community
+                            RETURN coalesce(n.name, n.id) AS name,
+                                   labels(n)[0] AS type, elementId(n) AS neo_id,
+                                   coalesce(n.description, n.intro, '') AS description,
+                                   n.community_id AS community_id
+                        """, {"node_ids": chunk_neo_ids})
+                        for row in res2:
+                            if not row["name"]:
+                                continue
+                            entity_info = {
+                                "name": row["name"], "type": row["type"],
+                                "neo_id": row["neo_id"], "description": row["description"] or "",
+                                "community_id": row["community_id"], "source": "vector_entity"
+                            }
+                            chunk_entity_ids.add(row["neo_id"])
+                            if not any(e["name"] == entity_info["name"] for e in matched_entities):
+                                matched_entities.append(entity_info)
+                    except Exception as e:
+                        logger.warning(f"Vector entity path failed: {e}")
+
+        # 4. 第二阶段重排：chunks + entities
+        reranked_entities = self._rerank_entities(question, matched_entities, vector_candidates, top_n=max(12, top_k * 2))
+        reranked_chunks = self._rerank_chunks(question, vector_candidates, reranked_entities, top_n=top_k)
+
+        result["entities"] = reranked_entities
+        result["chunks"] = reranked_chunks
         
-        result["entities"] = matched_entities
-        
-        # 4. 获取实体之间的关系
-        entity_names = [e["name"] for e in matched_entities]
+        # 5. 获取实体之间的关系并进行证据打分（带疾病锚点约束）
+        entity_names = [e["name"] for e in reranked_entities]
+        intent = self._infer_medical_intent(question)
+        anchors = self._select_anchor_entities(question, reranked_entities, intent)
         if entity_names:
-            relations = self._get_entity_relations(entity_names)
-            result["relations"] = relations
+            anchor_relations = self._get_anchor_relations(anchors, intent, limit=max(80, top_k * 10))
+            base_relations = self._get_entity_relations(entity_names)
+            if anchor_relations:
+                seen = set()
+                relations = []
+                for r in (anchor_relations + base_relations):
+                    key = (r.get('source'), r.get('type'), r.get('target'))
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    relations.append(r)
+            else:
+                relations = base_relations
+            result["relations"] = self._score_relations(
+                question,
+                relations,
+                reranked_entities,
+                top_n=max(60, top_k * 8),
+                anchors=anchors,
+                intent=intent,
+            )
         
-        # 5. 如果启用社区信息，获取相关社区上下文
-        if include_community and matched_entities:
+        # 6. 如果启用社区信息，获取相关社区上下文（包含社区报告正文）
+        if include_community and reranked_entities:
             community_ids = set()
-            for e in matched_entities:
+            for e in reranked_entities:
                 if e.get("community_id") is not None:
                     community_ids.add(e["community_id"])
-            
+
             for cid in list(community_ids)[:3]:  # 最多3个社区
                 community_entities = self.get_community_entities(cid)
-                if community_entities:  # get_community_entities 返回列表
-                    result["community_context"].append({
-                        "community_id": cid,
-                        "members": [e["name"] for e in community_entities[:10]]  # 限制成员数
-                    })
-        
-        # 6. 构建丰富的上下文
+                # 尝试获取该社区的 LLM 报告节点
+                report_text = ""
+                try:
+                    active_db = (database or self._database_ctx.get() or '').strip() or None
+                    with self._session() as sess:
+                        row = sess.run(
+                            "MATCH (c:Community {community_id: $cid, database: $database}) RETURN c.report AS report LIMIT 1",
+                            {"cid": cid, "database": active_db or "default"}
+                        ).single()
+                        if row and row.get("report"):
+                            report_text = row["report"]
+                except Exception:
+                    pass
+                entry = {
+                    "community_id": cid,
+                    "report": report_text,
+                    "members": [e["name"] for e in (community_entities or [])[:12]],
+                }
+                result["community_context"].append(entry)
+
+        # 输出可解释证据（前端可直接展示）
+        result["evidence"] = {
+            "top_chunks": [{"neo_id": c.get("neo_id"), "score": c.get("evidence_score", 0.0)} for c in reranked_chunks[:10]],
+            "top_entities": [{"name": e.get("name"), "score": e.get("evidence_score", 0.0), "source": e.get("source")} for e in reranked_entities[:15]],
+            "top_relations": [{"source": r.get("source"), "target": r.get("target"), "type": r.get("type"), "score": r.get("evidence_score", 0.0)} for r in result["relations"][:20]]
+        }
+
+        # 7. 构建丰富的上下文
         context = self._build_local_search_context(
-            chunks=vector_chunks,
-            entities=matched_entities,
+            chunks=reranked_chunks,
+            entities=reranked_entities,
             relations=result["relations"],
             community_context=result["community_context"]
         )
-        
-        # 7. LLM 生成答案
+
+        # 8. LLM 生成答案
         if self.llm and context:
             try:
                 answer = self.llm.generate_answer(question, context)
@@ -747,10 +859,21 @@ class GraphRAGService:
             except Exception as e:
                 logger.error(f"LLM generate failed: {e}")
                 result["answer"] = ""
+
+        # 9. 结构化证据答案（当 LLM 回答过于保守或空时，使用关系证据兜底）
+        structured_answer = self._build_medical_structured_answer(
+            intent=intent,
+            anchors=anchors,
+            relations=result.get("relations", []),
+        )
+        low_conf_phrases = ("没有找到", "无法", "未能", "无相关", "信息不足")
+        current_answer = result.get("answer") or ""
+        if structured_answer and (not current_answer or any(p in current_answer for p in low_conf_phrases)):
+            result["answer"] = structured_answer
         
         return result
     
-    def _vector_search_chunks(self, question: str, top_k: int = 5, doc_id: str = None) -> List[Dict]:
+    def _vector_search_chunks(self, question: str, top_k: int = 20, doc_id: str = None, database: str = None) -> List[Dict]:
         """向量检索相关的 Chunk
         
         Args:
@@ -760,28 +883,35 @@ class GraphRAGService:
         """
         chunks = []
         q_emb = self.embed_text(question)
-        if q_emb is None or not self.vector_store:
+        active_db = (database or self._database_ctx.get() or '').strip() or None
+        vector_store, _ = self._get_vector_store(database=active_db)
+        if q_emb is None or not vector_store:
             return chunks
         
         try:
             # 如果指定了 doc_id，使用过滤条件
             filter_dict = None
-            if doc_id:
-                filter_dict = {"doc_id": doc_id}
+            if doc_id or active_db:
+                filter_dict = {}
+                if doc_id:
+                    filter_dict["doc_id"] = doc_id
+                if active_db:
+                    filter_dict["database"] = active_db
             
             results = None
             for fn in ("similarity_search_with_score_by_vector", "similarity_search_by_vector"):
-                if hasattr(self.vector_store, fn):
+                if hasattr(vector_store, fn):
                     try:
                         if filter_dict:
                             # 尝试带过滤条件的搜索
-                            results = getattr(self.vector_store, fn)(q_emb, k=top_k * 3, filter=filter_dict)
+                            results = getattr(vector_store, fn)(q_emb, k=top_k * 3, filter=filter_dict)
                         else:
-                            results = getattr(self.vector_store, fn)(q_emb, k=top_k)
+                            # 多取 2x 再截断，避免重复 neo_id 导致有效结果不足
+                            results = getattr(vector_store, fn)(q_emb, k=top_k * 2)
                         break
                     except TypeError:
                         # 如果向量库不支持 filter 参数，回退到无过滤搜索
-                        results = getattr(self.vector_store, fn)(q_emb, k=top_k * 3 if doc_id else top_k)
+                        results = getattr(vector_store, fn)(q_emb, k=top_k * 3 if (doc_id or active_db) else top_k * 2)
                     except Exception:
                         continue
             
@@ -802,6 +932,10 @@ class GraphRAGService:
                             chunk_doc_id = metadata.get('doc_id')
                             if chunk_doc_id and chunk_doc_id != doc_id:
                                 continue  # 跳过不匹配的文档
+                        if active_db:
+                            chunk_db = metadata.get('database')
+                            if chunk_db and str(chunk_db).strip() != active_db:
+                                continue
                         
                         neo_id = None
                         for k in ('neo_node_id', 'neo_id', 'id'):
@@ -810,7 +944,8 @@ class GraphRAGService:
                                     neo_id = int(metadata[k])
                                     break
                                 except:
-                                    pass
+                                    neo_id = metadata[k]
+                                    break
                         
                         chunks.append({
                             "text": text,
@@ -829,345 +964,814 @@ class GraphRAGService:
         return chunks
     
     def _match_entities_from_question(self, question: str, doc_id: str = None) -> List[Dict]:
-        """从问题中匹配 Entity 节点
-        
-        策略：
-        1. 全文匹配：问题中包含实体名称
-        2. 模糊匹配：使用 CONTAINS 查找
-        
-        Args:
-            question: 用户问题
-            doc_id: 文档 ID，用于限定检索范围（可选）
+        """从问题中匹配领域节点
+
+        兼容两种模式：
+        - 文本语料库模式：:Entity 节点（GraphRAG 文本摄入产生）
+        - 纯知识图谱模式：:Disease/:Drug/:Symptom 等医疗域节点
+
+        策略：提取问题中 2-6 字的连续子串作为候选词，让 Neo4j 用 CONTAINS 做匹配，
+        避免将全部 5 万节点传回 Python 端做比对。
         """
         matched = []
-        
+        if not question:
+            return matched
+
+        # 提取候选词（2-6 字连续子串，去重）
+        tokens = list({
+            question[i:j]
+            for i in range(len(question))
+            for j in range(i + 2, min(i + 7, len(question) + 1))
+        })
+        if not tokens:
+            return matched
+
         with self._session() as sess:
             try:
-                # 根据是否有 doc_id 构建不同的查询
-                if doc_id:
-                    # 只匹配指定文档的实体
-                    res = sess.run("""
-                        MATCH (e:Entity) 
-                        WHERE e.doc_id = $doc_id
-                        RETURN e.name as name, e.type as type, id(e) as neo_id, 
-                               e.description as description, e.community_id as community_id
-                    """, {"doc_id": doc_id})
-                else:
-                    # 获取所有实体名称
-                    res = sess.run("""
-                        MATCH (e:Entity) 
-                        RETURN e.name as name, e.type as type, id(e) as neo_id, 
-                               e.description as description, e.community_id as community_id
-                    """)
-                
+                # 让 Neo4j CONTAINS 做匹配，兼容所有非基础设施节点
+                res = sess.run("""
+                    UNWIND $tokens AS tok
+                    MATCH (n)
+                    WHERE NOT n:Chunk AND NOT n:Document AND NOT n:Community
+                      AND n.name IS NOT NULL
+                      AND (n.name = tok OR n.name CONTAINS tok)
+                    RETURN DISTINCT
+                           n.name AS name,
+                           labels(n)[0] AS type,
+                           elementId(n) AS neo_id,
+                           coalesce(n.description, n.intro, n.text, '') AS description,
+                           n.community_id AS community_id
+                    LIMIT 80
+                """, {"tokens": tokens})
                 for row in res:
                     entity_name = row["name"]
-                    # 检查问题中是否包含实体名称
-                    if entity_name and entity_name in question:
+                    if entity_name:
                         matched.append({
                             "name": entity_name,
                             "type": row["type"],
                             "neo_id": row["neo_id"],
-                            "description": row["description"],
+                            "description": row["description"] or "",
                             "community_id": row["community_id"],
                             "source": "question_match"
                         })
             except Exception as e:
                 logger.warning(f"Entity matching failed: {e}")
-        
+
         return matched
     
     def _get_entity_relations(self, entity_names: List[str]) -> List[Dict]:
-        """获取实体之间的关系"""
+        """获取实体的关系
+
+        兼容任意边类型（不再局限于 RELATES_TO），适用于医疗知识图谱的
+        has_symptom / recommand_drug / do_eat / no_eat / need_check 等真实边类型。
+        同时返回邻居节点的简短描述，供上下文组装使用。
+        """
         relations = []
-        
         if not entity_names:
             return relations
-        
+
         with self._session() as sess:
             try:
-                # 获取这些实体之间的所有关系
                 res = sess.run("""
-                    MATCH (e1:Entity)-[r:RELATES_TO]->(e2:Entity)
-                    WHERE e1.name IN $names OR e2.name IN $names
-                    RETURN e1.name as source, e2.name as target, 
-                           r.type as rel_type, r.description as description
+                    MATCH (n)
+                    WHERE (n.name IN $names OR n.id IN $names)
+                      AND NOT n:Chunk AND NOT n:Document
+                    MATCH (n)-[r]->(m)
+                    WHERE NOT m:Chunk AND NOT m:Document AND NOT m:Community
+                    RETURN coalesce(n.name, n.id) AS source,
+                           type(r)                AS rel_type,
+                           coalesce(m.name, m.id) AS target,
+                           labels(m)[0]           AS target_type,
+                           coalesce(m.description, m.intro, '') AS target_desc,
+                           r.description          AS rel_desc
+                    LIMIT 200
                 """, {"names": entity_names})
-                
                 for row in res:
                     relations.append({
-                        "source": row["source"],
-                        "target": row["target"],
-                        "type": row["rel_type"],
-                        "description": row["description"]
+                        "source":      row["source"],
+                        "target":      row["target"],
+                        "type":        row["rel_type"],
+                        "target_type": row["target_type"],
+                        "description": row.get("rel_desc") or "",
+                        "target_desc": (row.get("target_desc") or "")[:120],
                     })
             except Exception as e:
                 logger.warning(f"Get relations failed: {e}")
-        
+
         return relations
+
+    def _extract_query_terms(self, text: str) -> List[str]:
+        """提取查询关键词（中英文混合），用于轻量级证据打分。"""
+        if not text:
+            return []
+        terms = re.findall(r'[\u4e00-\u9fff]{2,}|[A-Za-z0-9_]{2,}', text)
+        # 去重并保序
+        seen = set()
+        ordered = []
+        for t in terms:
+            key = t.lower()
+            if key not in seen:
+                seen.add(key)
+                ordered.append(t)
+        return ordered[:40]
+
+    def _infer_medical_intent(self, question: str) -> Dict[str, bool]:
+        """识别医疗问句意图，供关系重排加权使用。"""
+        q = (question or '').lower()
+        return {
+            'ask_drug': any(k in q for k in ('用药', '药', '治疗', 'recommand_drug', 'common_drug')),
+            'ask_check': any(k in q for k in ('检查', '检验', '化验', 'need_check')),
+            'ask_symptom': any(k in q for k in ('症状', '表现', '体征', 'has_symptom')),
+            'ask_diet': any(k in q for k in ('饮食', '吃', '忌口', 'do_eat', 'no_eat')),
+        }
+
+    def _select_anchor_entities(self, question: str, entities: List[Dict], intent: Dict[str, bool]) -> List[str]:
+        """选择问题锚点实体（优先 Disease 且名称出现在问题中）。"""
+        anchors: List[str] = []
+        for e in entities or []:
+            name = str(e.get('name') or '')
+            etype = str(e.get('type') or '')
+            if not name:
+                continue
+            if name in question and etype in ('Disease', '疾病'):
+                anchors.append(name)
+
+        # 如果没有 Disease 锚点，回退到名称直接命中的高分实体
+        if not anchors:
+            for e in entities or []:
+                name = str(e.get('name') or '')
+                if name and name in question and float(e.get('evidence_score') or 0.0) >= 0.55:
+                    anchors.append(name)
+
+        # 仍无锚点则取 top1 实体，避免完全失焦
+        if not anchors and entities:
+            anchors.append(str(entities[0].get('name') or ''))
+
+        # 去重保序
+        dedup = []
+        seen = set()
+        for a in anchors:
+            if a and a not in seen:
+                seen.add(a)
+                dedup.append(a)
+        return dedup[:3]
+
+    def _get_anchor_relations(self, anchors: List[str], intent: Dict[str, bool], limit: int = 120) -> List[Dict]:
+        """从锚点实体定向抓取关系，优先问题意图相关边类型。"""
+        if not anchors:
+            return []
+
+        rel_types: List[str] = []
+        if intent.get('ask_drug'):
+            rel_types.extend(['recommand_drug', 'common_drug'])
+        if intent.get('ask_check'):
+            rel_types.append('need_check')
+        if intent.get('ask_symptom'):
+            rel_types.append('has_symptom')
+        if intent.get('ask_diet'):
+            rel_types.extend(['do_eat', 'no_eat'])
+        rel_types = list(dict.fromkeys(rel_types))
+
+        with self._session() as sess:
+            try:
+                if rel_types:
+                    res = sess.run("""
+                        MATCH (d)-[r]->(m)
+                        WHERE coalesce(d.name, d.id) IN $anchors
+                          AND type(r) IN $rel_types
+                          AND NOT m:Chunk AND NOT m:Document AND NOT m:Community
+                        RETURN coalesce(d.name, d.id) AS source,
+                               type(r)                AS rel_type,
+                               coalesce(m.name, m.id) AS target,
+                               labels(m)[0]           AS target_type,
+                               coalesce(m.description, m.intro, '') AS target_desc,
+                               r.description          AS rel_desc
+                        LIMIT $limit
+                    """, {"anchors": anchors, "rel_types": rel_types, "limit": limit})
+                else:
+                    res = sess.run("""
+                        MATCH (d)-[r]->(m)
+                        WHERE coalesce(d.name, d.id) IN $anchors
+                          AND NOT m:Chunk AND NOT m:Document AND NOT m:Community
+                        RETURN coalesce(d.name, d.id) AS source,
+                               type(r)                AS rel_type,
+                               coalesce(m.name, m.id) AS target,
+                               labels(m)[0]           AS target_type,
+                               coalesce(m.description, m.intro, '') AS target_desc,
+                               r.description          AS rel_desc
+                        LIMIT $limit
+                    """, {"anchors": anchors, "limit": limit})
+
+                rows: List[Dict] = []
+                for row in res:
+                    rows.append({
+                        "source": row["source"],
+                        "target": row["target"],
+                        "type": row["rel_type"],
+                        "target_type": row["target_type"],
+                        "description": row.get("rel_desc") or "",
+                        "target_desc": (row.get("target_desc") or "")[:120],
+                    })
+                return rows
+            except Exception as e:
+                logger.warning(f"Get anchor relations failed: {e}")
+                return []
+
+    def _rerank_chunks(self, question: str, chunk_candidates: List[Dict], entities: List[Dict], top_n: int = 20) -> List[Dict]:
+        """基于关键词命中+实体命中+向量得分对 chunk 候选重排。"""
+        if not chunk_candidates:
+            return []
+
+        q_terms = [t.lower() for t in self._extract_query_terms(question)]
+        entity_names = [str(e.get('name') or '').strip() for e in (entities or []) if e.get('name')]
+
+        ranked = []
+        for c in chunk_candidates:
+            text = str(c.get('text') or '')
+            meta = c.get('metadata') or {}
+            searchable = (text + ' ' + json.dumps(meta, ensure_ascii=False)).lower()
+
+            kw_hit = 0.0
+            if q_terms:
+                hit_cnt = sum(1 for t in q_terms if t and t in searchable)
+                kw_hit = min(hit_cnt / max(len(q_terms), 1), 1.0)
+
+            ent_hit = 0.0
+            if entity_names:
+                ent_cnt = sum(1 for n in entity_names if n and n.lower() in searchable)
+                ent_hit = min(ent_cnt / max(min(len(entity_names), 8), 1), 1.0)
+
+            raw_score = c.get('score')
+            semantic = 0.0
+            if isinstance(raw_score, (int, float)):
+                # 兼容距离分数和相似度分数：统一映射到 (0,1]
+                semantic = 1.0 / (1.0 + abs(float(raw_score)))
+
+            evidence_score = 0.45 * kw_hit + 0.35 * ent_hit + 0.20 * semantic
+            new_c = dict(c)
+            new_c['evidence_score'] = round(float(evidence_score), 4)
+            ranked.append(new_c)
+
+        ranked.sort(key=lambda x: x.get('evidence_score', 0.0), reverse=True)
+        return ranked[:max(1, top_n)]
+
+    def _rerank_entities(self, question: str, entities: List[Dict], chunk_candidates: List[Dict], top_n: int = 30) -> List[Dict]:
+        """为实体打证据分并重排。"""
+        if not entities:
+            return []
+
+        q_terms = [t.lower() for t in self._extract_query_terms(question)]
+        chunk_text = ' '.join(str(c.get('text') or '') for c in (chunk_candidates or [])).lower()
+
+        source_weight = {
+            'question_match': 0.45,
+            'vector_entity': 0.35,
+            'chunk_mention': 0.30,
+        }
+
+        ranked = []
+        for e in entities:
+            name = str(e.get('name') or '')
+            desc = str(e.get('description') or '')
+            source = str(e.get('source') or '')
+            searchable = (name + ' ' + desc).lower()
+
+            score = source_weight.get(source, 0.20)
+
+            # 名称直接命中问题
+            if name and name in question:
+                score += 0.30
+
+            # 描述与问题关键词重叠
+            if q_terms:
+                overlap = sum(1 for t in q_terms if t in searchable)
+                score += min(overlap / max(len(q_terms), 1), 1.0) * 0.20
+
+            # 是否在召回 chunk 中被提及
+            if name and name.lower() in chunk_text:
+                score += 0.20
+
+            if e.get('community_id') is not None:
+                score += 0.05
+
+            new_e = dict(e)
+            new_e['evidence_score'] = round(float(score), 4)
+            ranked.append(new_e)
+
+        ranked.sort(key=lambda x: x.get('evidence_score', 0.0), reverse=True)
+
+        # 去重（按 name）
+        dedup = []
+        seen = set()
+        for e in ranked:
+            n = str(e.get('name') or '')
+            if not n or n in seen:
+                continue
+            seen.add(n)
+            dedup.append(e)
+            if len(dedup) >= max(1, top_n):
+                break
+        return dedup
+
+    def _score_relations(
+        self,
+        question: str,
+        relations: List[Dict],
+        entities: List[Dict],
+        top_n: int = 120,
+        anchors: Optional[List[str]] = None,
+        intent: Optional[Dict[str, bool]] = None,
+    ) -> List[Dict]:
+        """为关系边打证据分并排序。"""
+        if not relations:
+            return []
+
+        q_terms = [t.lower() for t in self._extract_query_terms(question)]
+        ent_score_map = {str(e.get('name') or ''): float(e.get('evidence_score') or 0.0) for e in (entities or [])}
+        anchor_set = set(anchors or [])
+        intent = intent or {}
+
+        rel_type_boost = {
+            'ask_drug': {'recommand_drug', 'common_drug'},
+            'ask_check': {'need_check'},
+            'ask_symptom': {'has_symptom'},
+            'ask_diet': {'do_eat', 'no_eat'},
+        }
+
+        scored = []
+        for r in relations:
+            src = str(r.get('source') or '')
+            tgt = str(r.get('target') or '')
+            rel_type = str(r.get('type') or '')
+            rel_desc = str(r.get('description') or '')
+            tgt_desc = str(r.get('target_desc') or '')
+
+            score = 0.10
+            score += min(ent_score_map.get(src, 0.0), 1.0) * 0.35
+            score += min(ent_score_map.get(tgt, 0.0), 1.0) * 0.25
+
+            # 锚点约束：优先展示锚点实体发出的关系
+            if anchor_set:
+                if src in anchor_set:
+                    score += 0.35
+                elif tgt in anchor_set:
+                    score += 0.08
+                else:
+                    score -= 0.18
+
+            searchable = (rel_type + ' ' + rel_desc + ' ' + tgt_desc).lower()
+            if q_terms:
+                overlap = sum(1 for t in q_terms if t in searchable)
+                score += min(overlap / max(len(q_terms), 1), 1.0) * 0.30
+
+            # 意图约束：问题问什么就优先对应关系类型
+            rel_type_l = rel_type.lower()
+            for key, rel_set in rel_type_boost.items():
+                if intent.get(key):
+                    if rel_type_l in rel_set:
+                        score += 0.30
+                    else:
+                        score -= 0.04
+
+            new_r = dict(r)
+            new_r['evidence_score'] = round(float(score), 4)
+            scored.append(new_r)
+
+        scored.sort(key=lambda x: x.get('evidence_score', 0.0), reverse=True)
+        return scored[:max(1, top_n)]
+
+    def _build_medical_structured_answer(self, intent: Dict[str, bool], anchors: List[str], relations: List[Dict]) -> str:
+        """基于锚点关系生成结构化答案，减少无关链路对最终回答的干扰。"""
+        if not anchors or not relations:
+            return ""
+
+        anchor_set = set(anchors)
+        rels = [r for r in relations if str(r.get('source') or '') in anchor_set]
+        if not rels:
+            return ""
+
+        def collect_by_types(type_set: set, limit: int = 12) -> List[str]:
+            vals = []
+            seen = set()
+            for r in rels:
+                rt = str(r.get('type') or '').lower()
+                tgt = str(r.get('target') or '').strip()
+                if rt in type_set and tgt and tgt not in seen:
+                    seen.add(tgt)
+                    vals.append(tgt)
+                    if len(vals) >= limit:
+                        break
+            return vals
+
+        anchor_name = anchors[0]
+        drugs = collect_by_types({'recommand_drug', 'common_drug'}, limit=15)
+        checks = collect_by_types({'need_check'}, limit=10)
+        symptoms = collect_by_types({'has_symptom'}, limit=10)
+        do_eat = collect_by_types({'do_eat'}, limit=10)
+        no_eat = collect_by_types({'no_eat'}, limit=10)
+
+        lines = [f"基于知识图谱中与“{anchor_name}”直接相关的证据："]
+
+        # 根据问题意图优先展示对应信息
+        if intent.get('ask_drug') and drugs:
+            lines.append("推荐用药：" + "、".join(drugs))
+        if intent.get('ask_check') and checks:
+            lines.append("建议检查：" + "、".join(checks))
+        if intent.get('ask_symptom') and symptoms:
+            lines.append("常见症状：" + "、".join(symptoms))
+        if intent.get('ask_diet'):
+            if do_eat:
+                lines.append("宜食：" + "、".join(do_eat))
+            if no_eat:
+                lines.append("忌食：" + "、".join(no_eat))
+
+        # 如果问题意图不明确，给出综合摘要
+        if len(lines) == 1:
+            if drugs:
+                lines.append("相关用药：" + "、".join(drugs[:10]))
+            if checks:
+                lines.append("相关检查：" + "、".join(checks[:8]))
+            if symptoms:
+                lines.append("相关症状：" + "、".join(symptoms[:8]))
+
+        if len(lines) == 1:
+            return ""
+
+        lines.append("以上结果来自图谱关系证据，仅供医学参考。")
+        return "\n".join(lines)
     
-    def _build_local_search_context(self, chunks: List[Dict], entities: List[Dict], 
+    def _build_local_search_context(self, chunks: List[Dict], entities: List[Dict],
                                      relations: List[Dict], community_context: List[Dict]) -> str:
-        """构建 Local Search 的上下文"""
+        """构建 Local Search 的上下文
+
+        优先级：实体信息 → 实体关系（含邻居描述） → 社区报告 → 原文片段
+        关系信息按源实体分组展示，便于 LLM 理解医疗知识图谱结构。
+        """
         context_parts = []
-        
+
         # 1. 实体信息
         if entities:
             entity_lines = ["【相关实体】"]
-            for e in entities[:10]:  # 限制数量
-                desc = f" - {e['description']}" if e.get('description') else ""
-                entity_lines.append(f"• {e['name']} ({e.get('type', '未知类型')}){desc}")
+            for e in entities[:12]:
+                desc = f"：{e['description'][:120]}" if e.get('description') else ""
+                entity_lines.append(f"• [{e.get('type', '?')}] {e['name']}{desc}")
             context_parts.append("\n".join(entity_lines))
-        
-        # 2. 关系信息
+
+        # 2. 关系信息（按源实体分组，每组列出所有连出的关系+邻居简介）
         if relations:
-            rel_lines = ["【实体关系】"]
-            for r in relations[:15]:  # 限制数量
-                desc = f" ({r['description']})" if r.get('description') else ""
-                rel_lines.append(f"• {r['source']} --[{r['type']}]--> {r['target']}{desc}")
+            from collections import defaultdict
+            grouped: dict = defaultdict(list)
+            for r in relations[:200]:
+                grouped[r['source']].append(r)
+            rel_lines = ["【知识图谱关系】"]
+            for src, rels in list(grouped.items())[:10]:
+                rel_lines.append(f"▶ {src}")
+                for r in rels[:15]:
+                    target_info = r['target']
+                    if r.get('target_desc'):
+                        target_info += f"（{r['target_desc'][:80]}）"
+                    rel_lines.append(f"   -{r['type']}→ {target_info}")
             context_parts.append("\n".join(rel_lines))
-        
-        # 3. 社区上下文
+
+        # 3. 社区上下文（包含报告文本，如有）
         if community_context:
-            comm_lines = ["【相关社区】"]
+            comm_lines = ["【社区概览】"]
             for c in community_context:
-                members = ", ".join(c.get("members", [])[:8])
-                comm_lines.append(f"• 社区 {c['community_id']}: {members}")
+                report = c.get("report", "")
+                if report:
+                    comm_lines.append(f"• 社区 {c['community_id']} 摘要：{report[:300]}")
+                else:
+                    members = "、".join(c.get("members", [])[:10])
+                    comm_lines.append(f"• 社区 {c['community_id']} 成员：{members}")
             context_parts.append("\n".join(comm_lines))
-        
-        # 4. 原文片段
+
+        # 4. 原文片段（有 :Chunk 节点时才有内容）
         if chunks:
             chunk_lines = ["【原文片段】"]
-            for idx, c in enumerate(chunks[:5], 1):  # 限制数量
-                text = c.get("text", "")[:500]  # 限制长度
+            for idx, c in enumerate(chunks[:5], 1):
+                text = c.get("text", "")[:500]
                 score_info = f" (相似度: {c['score']:.3f})" if c.get('score') else ""
                 chunk_lines.append(f"[{idx}]{score_info}: {text}")
             context_parts.append("\n".join(chunk_lines))
-        
+
         return "\n\n".join(context_parts)
 
     # ========== Phase 2: 社区检测 (Leiden Algorithm) ==========
     
-    def detect_communities(self, write_property: bool = True) -> Dict[str, Any]:
-        """使用 Leiden 算法检测 Entity 节点的社区
-        
+    def detect_communities(self, write_property: bool = True, mode: str = 'auto') -> Dict[str, Any]:
+        """使用 Leiden 算法检测节点社区
+
         需要安装 Neo4j Graph Data Science (GDS) 插件
-        
+
         Args:
             write_property: 是否将 community_id 写回节点属性
-            
+            mode: 检测模式
+                'entity' — 仅对 :Entity 节点（GraphRAG 文档摄入产生的实体）
+                'full'   — 对全图所有领域节点（排除 Chunk/Document），适合医疗/知识图谱等领域数据库
+                'auto'   — 自动判断：若 Entity < 50 则回退到 full 模式
+
         Returns:
-            {
-                "success": bool,
-                "communities": [{"community_id": int, "members": [str], "size": int}],
-                "total_communities": int,
-                "total_entities": int
-            }
+            {"success": bool, "communities": [...], "total_communities": int, "total_nodes": int, "mode_used": str}
         """
         with self._session() as sess:
             try:
-                # 1. 检查是否有足够的 Entity 节点
-                count_result = sess.run("MATCH (e:Entity) RETURN count(e) as cnt")
-                entity_count = count_result.single()["cnt"]
-                
-                if entity_count < 2:
-                    return {
-                        "success": False, 
-                        "error": f"需要至少 2 个 Entity 节点进行社区检测，当前只有 {entity_count} 个"
-                    }
-                
-                # 2. 检查是否有关系，如果没有则创建共现关系
-                rel_count_result = sess.run("MATCH (:Entity)-[r:RELATES_TO]->(:Entity) RETURN count(r) as cnt")
-                rel_count = rel_count_result.single()["cnt"]
-                
-                if rel_count == 0:
-                    logger.warning("没有 Entity 之间的关系，将基于共同出现在同一 Chunk 中建立隐式关系")
-                    # 创建基于 Chunk 共现的隐式关系
-                    sess.run("""
-                        MATCH (c:Chunk)-[:MENTIONS]->(e1:Entity)
-                        MATCH (c)-[:MENTIONS]->(e2:Entity)
-                        WHERE id(e1) < id(e2)
-                        MERGE (e1)-[r:CO_OCCURS]->(e2)
-                        ON CREATE SET r.weight = 1
-                        ON MATCH SET r.weight = r.weight + 1
-                    """)
-                
-                # 3. 删除旧的图投影（如果存在）
+                GRAPH_NAME = 'kgCommunityGraph'
+
+                # ── 自动选择模式 ──
+                entity_count = sess.run("MATCH (e:Entity) RETURN count(e) as cnt").single()["cnt"]
+                if mode == 'auto':
+                    mode = 'entity' if entity_count >= 50 else 'full'
+                    logger.info(f"社区检测模式自动选择: {mode}（Entity 节点数={entity_count}）")
+
+                # ── 删除旧投影 ──
                 try:
-                    sess.run("CALL gds.graph.drop('entityGraph', false)")
-                except Exception:
-                    pass  # 图不存在，忽略
-                
-                # 4. 检查可用的关系类型
-                has_relates = sess.run("MATCH (:Entity)-[r:RELATES_TO]->(:Entity) RETURN count(r) > 0 as has").single()["has"]
-                has_co_occurs = sess.run("MATCH (:Entity)-[r:CO_OCCURS]->(:Entity) RETURN count(r) > 0 as has").single()["has"]
-                
-                # 构建关系类型配置 - Leiden 需要 UNDIRECTED
-                rel_configs = []
-                if has_relates:
-                    rel_configs.append("RELATES_TO: {orientation: 'UNDIRECTED'}")
-                if has_co_occurs:
-                    rel_configs.append("CO_OCCURS: {orientation: 'UNDIRECTED'}")
-                
-                if not rel_configs:
-                    return {
-                        "success": False,
-                        "error": "没有找到 Entity 之间的关系，无法进行社区检测"
-                    }
-                
-                # 5. 创建图投影 - 使用 UNDIRECTED 模式（Leiden 算法要求）
-                rel_config_str = ", ".join(rel_configs)
-                project_query = f"""
-                    CALL gds.graph.project(
-                        'entityGraph',
-                        'Entity',
-                        {{{rel_config_str}}}
-                    )
-                """
-                
-                logger.info(f"GDS graph.project query: {project_query}")
-                sess.run(project_query)
-                
-                # 6. 运行 Leiden 社区检测算法
-                if write_property:
-                    # 写回模式：将 community_id 写入节点属性
-                    result = sess.run("""
-                        CALL gds.leiden.write('entityGraph', {
-                            writeProperty: 'community_id'
-                        })
-                        YIELD communityCount, modularity
-                        RETURN communityCount, modularity
-                    """)
-                    stats = result.single()
-                    community_count = stats["communityCount"]
-                    modularity = stats["modularity"]
-                    
-                    logger.info(f"Leiden 社区检测完成: {community_count} 个社区, 模块度={modularity:.4f}")
-                
-                # 7. 获取社区详情
-                communities_result = sess.run("""
-                    MATCH (e:Entity)
-                    WHERE e.community_id IS NOT NULL
-                    RETURN e.community_id AS community_id, collect(e.name) AS members, count(e) AS size
-                    ORDER BY size DESC
-                """)
-                
-                communities = []
-                for row in communities_result:
-                    communities.append({
-                        "community_id": row["community_id"],
-                        "members": row["members"],
-                        "size": row["size"]
-                    })
-                
-                # 8. 清理图投影
-                try:
-                    sess.run("CALL gds.graph.drop('entityGraph', false)")
+                    sess.run(f"CALL gds.graph.drop('{GRAPH_NAME}', false)")
                 except Exception:
                     pass
-                
+
+                if mode == 'entity':
+                    # ────── Entity 模式（原有逻辑）──────
+                    if entity_count < 2:
+                        return {"success": False, "error": f"Entity 节点不足 2 个（当前 {entity_count}），无法检测社区"}
+
+                    # 补充共现关系
+                    rel_count = sess.run("MATCH (:Entity)-[r:RELATES_TO|CO_OCCURS]->(:Entity) RETURN count(r) as cnt").single()["cnt"]
+                    if rel_count == 0:
+                        logger.warning("Entity 间无关系，基于 Chunk 共现建立隐式关系")
+                        sess.run("""
+                            MATCH (c:Chunk)-[:MENTIONS]->(e1:Entity)
+                            MATCH (c)-[:MENTIONS]->(e2:Entity)
+                            WHERE elementId(e1) < elementId(e2)
+                            MERGE (e1)-[r:CO_OCCURS]->(e2)
+                            ON CREATE SET r.weight = 1
+                            ON MATCH SET r.weight = r.weight + 1
+                        """)
+
+                    has_relates  = sess.run("MATCH (:Entity)-[:RELATES_TO]->(:Entity)  RETURN count(*) > 0 as has").single()["has"]
+                    has_co_occurs = sess.run("MATCH (:Entity)-[:CO_OCCURS]->(:Entity)  RETURN count(*) > 0 as has").single()["has"]
+                    rel_configs = []
+                    if has_relates:   rel_configs.append("RELATES_TO: {orientation: 'UNDIRECTED'}")
+                    if has_co_occurs: rel_configs.append("CO_OCCURS:  {orientation: 'UNDIRECTED'}")
+                    if not rel_configs:
+                        return {"success": False, "error": "Entity 节点之间无可用关系，无法检测社区"}
+
+                    project_query = f"CALL gds.graph.project('{GRAPH_NAME}', 'Entity', {{{', '.join(rel_configs)}}})"
+                    sess.run(project_query)
+                    node_where = "n:Entity"
+
+                else:
+                    # ────── Full 模式（领域知识图谱） ──────
+                    # 获取所有非 Chunk/Document 标签
+                    all_labels_raw = sess.run(
+                        "CALL db.labels() YIELD label "
+                        "WITH label "
+                        "WHERE NOT label IN ['Chunk','Document','Community'] "
+                        "RETURN label"
+                    ).data()
+                    domain_labels = [r['label'] for r in all_labels_raw]
+                    if not domain_labels:
+                        return {"success": False, "error": "没有找到可用的领域节点标签"}
+
+                    total_nodes = sess.run(
+                        "MATCH (n) WHERE NOT n:Chunk AND NOT n:Document AND NOT n:Community "
+                        "RETURN COUNT(n) as cnt"
+                    ).single()["cnt"]
+                    if total_nodes < 2:
+                        return {"success": False, "error": f"可用节点不足 2 个（当前 {total_nodes}）"}
+
+                    # 获取这些节点之间的所有关系类型
+                    all_rel_raw = sess.run(
+                        "CALL db.relationshipTypes() YIELD relationshipType RETURN relationshipType"
+                    ).data()
+                    all_rels = [r['relationshipType'] for r in all_rel_raw
+                                if r['relationshipType'] not in ('HAS_CHUNK', 'CONTAINS', 'MENTIONS')]
+
+                    # 使用 Cypher 投影以排除 Chunk/Document 节点
+                    node_query = (
+                        "MATCH (n) WHERE NOT n:Chunk AND NOT n:Document AND NOT n:Community "
+                        "RETURN id(n) AS id"
+                    )
+                    edge_query = (
+                        "MATCH (a)-[r]->(b) "
+                        "WHERE NOT a:Chunk AND NOT a:Document AND NOT b:Chunk AND NOT b:Document "
+                        "  AND NOT a:Community AND NOT b:Community "
+                        "RETURN id(a) AS source, id(b) AS target"
+                    )
+                    project_query = (
+                        f"CALL gds.graph.project.cypher("
+                        f"  '{GRAPH_NAME}', "
+                        f"  '{node_query}', "
+                        f"  '{edge_query}'"
+                        f")"
+                    )
+                    logger.info(f"Full 模式 GDS 投影: {len(domain_labels)} 个标签, {len(all_rels)} 种关系类型")
+                    sess.run(project_query)
+                    node_where = "NOT n:Chunk AND NOT n:Document AND NOT n:Community"
+
+                # ── 运行 Leiden ──
+                if write_property:
+                    algorithm_used = None
+                    community_count = 0
+                    modularity = None
+
+                    # 优先 Leiden；若插件版本/图方向不兼容，自动回退 Louvain，再回退 LabelPropagation。
+                    algo_attempts = [
+                        (
+                            "leiden",
+                            f"""
+                            CALL gds.leiden.write('{GRAPH_NAME}', {{writeProperty: 'community_id'}})
+                            YIELD communityCount, modularity
+                            RETURN communityCount, modularity
+                            """,
+                        ),
+                        (
+                            "louvain",
+                            f"""
+                            CALL gds.louvain.write('{GRAPH_NAME}', {{writeProperty: 'community_id'}})
+                            YIELD communityCount, modularity
+                            RETURN communityCount, modularity
+                            """,
+                        ),
+                        (
+                            "label_propagation",
+                            f"""
+                            CALL gds.labelPropagation.write('{GRAPH_NAME}', {{writeProperty: 'community_id'}})
+                            YIELD communityCount
+                            RETURN communityCount, null AS modularity
+                            """,
+                        ),
+                    ]
+
+                    last_err = None
+                    for algo_name, algo_query in algo_attempts:
+                        try:
+                            algo_result = sess.run(algo_query)
+                            stats = algo_result.single()
+                            community_count = stats["communityCount"] or 0
+                            modularity = stats.get("modularity") if hasattr(stats, "get") else stats["modularity"]
+                            algorithm_used = algo_name
+                            logger.info(f"社区检测算法 {algo_name} 完成: {community_count} 个社区, modularity={modularity}")
+                            break
+                        except Exception as algo_err:
+                            last_err = str(algo_err)
+                            logger.warning(f"社区检测算法 {algo_name} 失败，将尝试回退算法: {algo_err}")
+
+                    if algorithm_used is None:
+                        return {
+                            "success": False,
+                            "error": "社区检测失败：Leiden/Louvain/LabelPropagation 均不可用，请检查 Neo4j GDS 插件版本与配置。",
+                            "detail": last_err,
+                        }
+
+                # ── 获取社区概览 ──
+                communities_result = sess.run(f"""
+                    MATCH (n)
+                    WHERE {node_where} AND n.community_id IS NOT NULL
+                    RETURN n.community_id AS community_id,
+                           collect(coalesce(n.name, n.id, elementId(n)))[..10] AS members,
+                           count(n) AS size
+                    ORDER BY size DESC
+                    LIMIT 200
+                """)
+                communities = [
+                    {"community_id": row["community_id"], "members": row["members"], "size": row["size"]}
+                    for row in communities_result
+                ]
+
+                # ── 清理投影 ──
+                try:
+                    sess.run(f"CALL gds.graph.drop('{GRAPH_NAME}', false)")
+                except Exception:
+                    pass
+
                 return {
                     "success": True,
                     "communities": communities,
                     "total_communities": len(communities),
-                    "total_entities": entity_count
+                    "total_nodes": entity_count if mode == 'entity' else total_nodes,
+                    "mode_used": mode,
+                    "algorithm_used": algorithm_used if write_property else None,
+                    "modularity": modularity if write_property else None,
                 }
-                
+
             except Exception as e:
                 error_msg = str(e)
-                if "Unknown function" in error_msg or "gds" in error_msg.lower():
+                try:
+                    sess.run(f"CALL gds.graph.drop('kgCommunityGraph', false)")
+                except Exception:
+                    pass
+                if "Unknown function" in error_msg or "gds" in error_msg.lower() or "No value present" in error_msg:
                     return {
                         "success": False,
-                        "error": "Neo4j GDS 插件未安装或未启用。请在 Neo4j Desktop 中安装 Graph Data Science Library 插件。"
+                        "error": "Neo4j GDS 插件未安装、版本不兼容或图投影配置不满足算法要求。请检查 Graph Data Science 插件和关系方向配置。",
+                        "detail": error_msg,
                     }
                 logger.error(f"Community detection failed: {e}")
-                import traceback
-                traceback.print_exc()
+                import traceback; traceback.print_exc()
                 return {"success": False, "error": error_msg}
 
     def get_community_entities(self, community_id: int) -> List[Dict[str, Any]]:
-        """获取指定社区的所有实体"""
+        """获取指定社区的所有节点（支持 Entity 节点或领域节点）"""
         with self._session() as sess:
             result = sess.run("""
-                MATCH (e:Entity {community_id: $cid})
-                OPTIONAL MATCH (e)-[r:RELATES_TO]-(other:Entity {community_id: $cid})
-                RETURN e.name AS name, e.type AS type, e.description AS description,
-                       collect(DISTINCT {target: other.name, rel_type: r.type}) AS relations
+                MATCH (n)
+                WHERE n.community_id = $cid AND NOT n:Chunk AND NOT n:Document AND NOT n:Community
+                OPTIONAL MATCH (n)-[r]-(other)
+                WHERE other.community_id = $cid AND NOT other:Chunk AND NOT other:Document
+                RETURN
+                    coalesce(n.name, n.id, elementId(n)) AS name,
+                    labels(n)[0] AS type,
+                    coalesce(n.description, n.intro, n.content, '') AS description,
+                    collect(DISTINCT {
+                        target: coalesce(other.name, other.id, elementId(other)),
+                        rel_type: type(r)
+                    })[..8] AS relations
+                LIMIT 200
             """, {"cid": community_id})
-            
+
             entities = []
             for row in result:
                 entities.append({
                     "name": row["name"],
                     "type": row["type"],
                     "description": row["description"],
-                    "relations": [r for r in row["relations"] if r["target"]]
+                    "relations": [r for r in row["relations"] if r and r.get("target")],
                 })
             return entities
 
     def generate_community_report(self, community_id: int) -> Dict[str, Any]:
-        """为指定社区生成 LLM 摘要报告"""
+        """为指定社区生成 LLM 摘要报告（支持 Entity 节点和领域节点）"""
         if not self.llm:
             return {"success": False, "error": "LLM not available"}
-        
+
+        active_db = (self._database_ctx.get() or '').strip() or None
+
         entities = self.get_community_entities(community_id)
         if not entities:
-            return {"success": False, "error": f"Community {community_id} has no entities"}
-        
-        # 构建社区信息
+            return {"success": False, "error": f"Community {community_id} has no nodes"}
+
         entity_info = []
         for e in entities:
             info = f"- {e['name']} ({e['type']}): {e['description'] or '无描述'}"
             if e['relations']:
-                rels = ", ".join([f"{r['rel_type']}->{r['target']}" for r in e['relations'][:5]])
-                info += f" [关系: {rels}]"
+                rels = ", ".join([
+                    f"{r['rel_type']}->{r['target']}"
+                    for r in e['relations'][:5]
+                    if r.get('target')
+                ])
+                if rels:
+                    info += f" [关系: {rels}]"
             entity_info.append(info)
-        
+
         prompt = f"""请为以下知识社区生成一份简洁的摘要报告。
 
-【社区实体】
-{chr(10).join(entity_info)}
+【社区节点】
+{chr(10).join(entity_info[:60])}
 
 【要求】
 1. 总结这个社区的核心主题（1-2句话）
-2. 列出关键实体及其重要性
-3. 描述实体之间的主要关系模式
+2. 列出关键节点及其重要性
+3. 描述节点之间的主要关系模式
 4. 总字数不超过300字
 
 请输出摘要报告："""
-        
+
         try:
-            # 使用 LangChain 的 ChatOpenAI 接口
             from langchain_core.messages import HumanMessage
-            
             response = self.llm.llm.invoke([HumanMessage(content=prompt)])
             report = response.content.strip()
-            
-            # 存储报告到 Neo4j
+
             with self._session() as sess:
                 sess.run("""
-                    MERGE (c:Community {community_id: $cid})
-                    SET c.report = $report, c.updated_at = datetime(), c.entity_count = $count
-                """, {"cid": community_id, "report": report, "count": len(entities)})
-            
+                    MERGE (c:Community {community_id: $cid, database: $database})
+                    SET c.report = $report,
+                        c.updated_at = datetime(),
+                        c.entity_count = $count,
+                        c.node_count = $count
+                """, {
+                    "cid": community_id,
+                    "database": active_db or "default",
+                    "report": report,
+                    "count": len(entities)
+                })
+
             return {
                 "success": True,
                 "community_id": community_id,
                 "report": report,
-                "entity_count": len(entities)
+                "entity_count": len(entities),
             }
-            
         except Exception as e:
             logger.error(f"Generate community report failed: {e}")
             return {"success": False, "error": str(e)}
 
     def generate_all_community_reports(self) -> Dict[str, Any]:
-        """为所有社区生成报告"""
+        """为所有社区生成报告（支持 Entity 节点和领域节点）"""
         with self._session() as sess:
             result = sess.run("""
-                MATCH (e:Entity)
-                WHERE e.community_id IS NOT NULL
-                RETURN DISTINCT e.community_id AS cid
+                MATCH (n)
+                WHERE n.community_id IS NOT NULL AND NOT n:Chunk AND NOT n:Document
+                RETURN DISTINCT n.community_id AS cid
                 ORDER BY cid
             """)
             community_ids = [row["cid"] for row in result]
@@ -1283,7 +1887,7 @@ class GraphRAGService:
                 return result
 
             # 若社区报告不足，再回退到一次局部检索，确保至少提供片段级答案
-            local_fallback = self.local_search(question, top_k=5, doc_id=doc_id)
+            local_fallback = self.local_search(question, top_k=20, doc_id=doc_id)
             if local_fallback:
                 answer_text = local_fallback.get("answer")
                 if not answer_text:
@@ -1322,6 +1926,7 @@ class GraphRAGService:
             doc_id: 文档 ID，用于过滤只包含该文档实体的社区（可选）
         """
         communities = []
+        active_db = (self._database_ctx.get() or '').strip() or None
         
         with self._session() as sess:
             try:
@@ -1332,22 +1937,22 @@ class GraphRAGService:
                         WHERE e.doc_id = $doc_id AND e.community_id IS NOT NULL
                         WITH DISTINCT e.community_id AS cid
                         MATCH (c:Community {community_id: cid})
-                        WHERE c.report IS NOT NULL
+                        WHERE c.report IS NOT NULL AND c.database = $database
                         RETURN c.community_id AS community_id, c.report AS report, 
                                c.entity_count AS entity_count, c.updated_at AS updated_at
                         ORDER BY c.entity_count DESC
                         LIMIT $limit
-                    """, {"doc_id": doc_id, "limit": max_communities})
+                    """, {"doc_id": doc_id, "limit": max_communities, "database": active_db or "default"})
                 else:
                     # 获取有报告的社区
                     res = sess.run("""
                         MATCH (c:Community)
-                        WHERE c.report IS NOT NULL
+                        WHERE c.report IS NOT NULL AND c.database = $database
                         RETURN c.community_id AS community_id, c.report AS report, 
                                c.entity_count AS entity_count, c.updated_at AS updated_at
                         ORDER BY c.entity_count DESC
                         LIMIT $limit
-                    """, {"limit": max_communities})
+                    """, {"limit": max_communities, "database": active_db or "default"})
                 
                 for row in res:
                     communities.append({
@@ -1356,7 +1961,7 @@ class GraphRAGService:
                         "entity_count": row["entity_count"] or 0
                     })
                 
-                # 如果没有 Community 节点但有带 community_id 的 Entity，也尝试获取
+                # 如果没有 Community 节点但有带 community_id 的实体（Entity 或领域节点），也尝试获取
                 if not communities:
                     if doc_id:
                         res = sess.run("""
@@ -1387,6 +1992,35 @@ class GraphRAGService:
                             "community_id": row["community_id"],
                             "report": report,
                             "entity_count": row["entity_count"]
+                        })
+
+                # 第三级 fallback：查询领域节点（Disease/Drug 等，非 Entity/Chunk/Document/Community）
+                if not communities:
+                    res = sess.run("""
+                        MATCH (n)
+                        WHERE n.community_id IS NOT NULL
+                          AND NOT n:Chunk AND NOT n:Document AND NOT n:Community
+                        WITH n.community_id AS cid,
+                             collect(n)[..30] AS members,
+                             count(n) AS cnt
+                        RETURN cid AS community_id, cnt AS entity_count,
+                               [m IN members |
+                                   coalesce(labels(m)[0], '') + '|' +
+                                   coalesce(m.name, m.id, '') +
+                                   CASE WHEN m.description IS NOT NULL
+                                        THEN ': ' + substring(m.description, 0, 80)
+                                        ELSE '' END
+                               ] AS entity_info
+                        ORDER BY cnt DESC
+                        LIMIT $limit
+                    """, {"limit": max_communities})
+                    for row in res:
+                        entity_info_list = [x for x in (row["entity_info"] or []) if x][:20]
+                        report = "社区成员（领域节点）: " + "; ".join(entity_info_list)
+                        communities.append({
+                            "community_id": row["community_id"],
+                            "report": report,
+                            "entity_count": row["entity_count"] or 0
                         })
                         
             except Exception as e:
@@ -1520,7 +2154,8 @@ class GraphRAGService:
     def _global_no_communities_fallback(self, question: str, doc_id: str = None) -> Optional[Dict[str, Any]]:
         """Global Search fallback when no communities/reports exist"""
         try:
-            local_result = self.local_search(question, top_k=5, doc_id=doc_id)
+            active_db = (self._database_ctx.get() or '').strip() or None
+            local_result = self.local_search(question, top_k=20, doc_id=doc_id, database=active_db)
         except Exception as exc:
             logger.warning(f"Local search fallback during global search failed: {exc}")
             return None
@@ -1552,7 +2187,7 @@ class GraphRAGService:
             }
         }
     
-    def hybrid_search(self, question: str, top_k: int = 5, 
+    def hybrid_search(self, question: str, top_k: int = 20, 
                       strategy: str = "auto", chat_history: list = None, doc_id: str = None, database: str = None) -> Dict[str, Any]:
         """混合搜索：自动选择或组合 Local Search 和 Global Search
         
@@ -1592,13 +2227,14 @@ class GraphRAGService:
         
         local_result = None
         global_result = None
+        active_db = (database or self._database_ctx.get() or '').strip() or None
         
         if strategy in ("local", "both"):
-            local_result = self.local_search(enhanced_question, top_k=top_k, doc_id=doc_id)
+            local_result = self.local_search(enhanced_question, top_k=top_k, doc_id=doc_id, database=active_db)
             result["local_result"] = local_result
         
         if strategy in ("global", "both"):
-            global_result = self.global_search(enhanced_question, doc_id=doc_id)
+            global_result = self.global_search(enhanced_question, doc_id=doc_id, database=active_db)
             result["global_result"] = global_result
         
         # 生成最终答案
@@ -1878,10 +2514,12 @@ class GraphRAGService:
                 vec_ids = [row["vec_id"] for row in result if row["vec_id"]]
             
             # 2. 从 PGVector 删除向量
-            if self.vector_store and vec_ids:
+            active_db = (self._database_ctx.get() or '').strip() or None
+            vector_store, _ = self._get_vector_store(database=active_db)
+            if vector_store and vec_ids:
                 try:
-                    if hasattr(self.vector_store, 'delete'):
-                        self.vector_store.delete(vec_ids)
+                    if hasattr(vector_store, 'delete'):
+                        vector_store.delete(vec_ids)
                         logger.info(f"Deleted {len(vec_ids)} vectors for doc {doc_id}")
                     else:
                         logger.warning("PGVector store does not support delete method")
@@ -1934,7 +2572,7 @@ class GraphRAGService:
             if conn:
                 conn.close()
 
-    def cleanup_isolated_vectors(self) -> Dict[str, Any]:
+    def cleanup_isolated_vectors(self, database: Optional[str] = None) -> Dict[str, Any]:
         """清理孤立向量：删除 PGVector 中存在但 Neo4j 中不存在的向量"""
         if not psycopg2:
             return {"success": False, "error": "psycopg2 module not found"}
@@ -1942,14 +2580,17 @@ class GraphRAGService:
         try:
             # 1. 获取 Neo4j 中所有有效的 vec_id
             valid_vec_ids = set()
-            with self._session() as sess:
-                result = sess.run("MATCH (c:Chunk) WHERE c.vec_id IS NOT NULL RETURN c.vec_id as vec_id")
-                for row in result:
-                    valid_vec_ids.add(row["vec_id"])
+            with self._use_database(database):
+                with self._session() as sess:
+                    result = sess.run("MATCH (c:Chunk) WHERE c.vec_id IS NOT NULL RETURN c.vec_id as vec_id")
+                    for row in result:
+                        valid_vec_ids.add(row["vec_id"])
             
             logger.info(f"Found {len(valid_vec_ids)} valid vector IDs in Neo4j")
 
             # 2. 连接 Postgres
+            active_db = (database or self._database_ctx.get() or '').strip() or None
+            active_collection = self.get_vector_collection_name(database=active_db)
             conn = psycopg2.connect(self.pg_conn)
             deleted_count = 0
             total_pg_vectors = 0
@@ -1959,17 +2600,17 @@ class GraphRAGService:
                     with conn.cursor() as cur:
                         # 获取 collection_id
                         cur.execute(
-                            "SELECT uuid FROM langchain_pg_collection WHERE name = %s", 
-                            (self.pg_collection,)
+                            "SELECT uuid FROM kg_pg_collection WHERE name = %s", 
+                            (active_collection,)
                         )
                         row = cur.fetchone()
                         if not row:
-                            return {"success": False, "error": f"Collection {self.pg_collection} not found"}
+                            return {"success": True, "total_vectors": 0, "valid_vectors": len(valid_vec_ids), "deleted_isolated_vectors": 0}
                         collection_uuid = row[0]
                         
                         # 确定 ID 列名
                         cur.execute(
-                            "SELECT column_name FROM information_schema.columns WHERE table_name = 'langchain_pg_embedding'"
+                            "SELECT column_name FROM information_schema.columns WHERE table_name = 'kg_pg_embedding'"
                         )
                         columns = [r[0] for r in cur.fetchall()]
                         
@@ -1980,13 +2621,13 @@ class GraphRAGService:
                             id_col = 'id'
                         
                         if not id_col:
-                             return {"success": False, "error": f"Could not find ID column in langchain_pg_embedding. Available columns: {columns}"}
+                                return {"success": False, "error": f"Could not find ID column in kg_pg_embedding. Available columns: {columns}"}
 
                         logger.info(f"Using ID column: {id_col}")
 
                         # 获取该 collection 下所有向量 ID
                         cur.execute(
-                            f"SELECT {id_col} FROM langchain_pg_embedding WHERE collection_id = %s",
+                            f"SELECT {id_col} FROM kg_pg_embedding WHERE collection_id = %s",
                             (collection_uuid,)
                         )
                         pg_vec_ids = [r[0] for r in cur.fetchall() if r[0] is not None]
@@ -2002,8 +2643,8 @@ class GraphRAGService:
                             for i in range(0, len(isolated_ids), chunk_size):
                                 batch = isolated_ids[i:i+chunk_size]
                                 cur.execute(
-                                    f"DELETE FROM langchain_pg_embedding WHERE {id_col} = ANY(%s)",
-                                    (batch,)
+                                    f"DELETE FROM kg_pg_embedding WHERE collection_id = %s AND {id_col} = ANY(%s)",
+                                    (collection_uuid, batch)
                                 )
                                 deleted_count += cur.rowcount
                         else:
@@ -2022,3 +2663,340 @@ class GraphRAGService:
         except Exception as e:
             logger.error(f"Cleanup isolated vectors failed: {e}")
             return {"success": False, "error": str(e)}
+
+    def cleanup_orphaned_chunks(self, database: Optional[str] = None) -> Dict[str, Any]:
+        """清理孤立Chunk：删除 Neo4j 中没有对应向量的 Chunk 节点"""
+        try:
+            deleted_chunks = 0
+            deleted_mentions = 0
+            deleted_contains = 0
+            
+            with self._use_database(database):
+                with self._session() as sess:
+                    # 合并两条件：获取所有孤立Chunk
+                    # 条件1: 没有 vec_id 或 vec_id 为空
+                    # 条件2: 没有对应Document（CONTAINS关系）
+                    result = sess.run("""
+                        MATCH (c:Chunk)
+                        WHERE (c.vec_id IS NULL OR c.vec_id = '')
+                           OR NOT EXISTS { MATCH (d:Document)-[:CONTAINS]->(c) }
+                        RETURN elementId(c) as chunk_id, c.doc_id as doc_id, c.idx as idx, c.vec_id as vec_id
+                        LIMIT 10000
+                    """)
+                    orphaned = [row for row in result]
+                
+                if not orphaned:
+                    logger.info("No orphaned chunks found")
+                    return {
+                        "success": True,
+                        "deleted_chunks": 0,
+                        "deleted_mentions": 0,
+                        "deleted_contains": 0,
+                        "total_checked": 0
+                    }
+
+                logger.info(f"Found {len(orphaned)} orphaned chunks to delete")
+
+                # 删除这些 Chunk 的关系和节点
+                for chunk in orphaned:
+                    chunk_id = chunk["chunk_id"]
+
+                    # 删除 MENTIONS 关系
+                    result = sess.run("MATCH (c)-[r:MENTIONS]->() WHERE elementId(c)=$cid DELETE r", {"cid": chunk_id})
+                    deleted_mentions += result.delete_relationships_deleted
+
+                    # 删除 CONTAINS 关系
+                    result = sess.run("MATCH ()-[r:CONTAINS]->(c) WHERE elementId(c)=$cid DELETE r", {"cid": chunk_id})
+                    deleted_contains += result.delete_relationships_deleted
+
+                    # 删除 Chunk 节点本身
+                    result = sess.run("MATCH (c:Chunk) WHERE elementId(c)=$cid DELETE c", {"cid": chunk_id})
+                    deleted_chunks += result.nodes_deleted
+                
+            return {
+                "success": True,
+                "deleted_chunks": deleted_chunks,
+                "deleted_mentions": deleted_mentions,
+                "deleted_contains": deleted_contains,
+                "total_checked": len(orphaned),
+                "summary": f"删除了 {deleted_chunks} 个孤立Chunk，以及 {deleted_mentions} 个MENTIONS关系和 {deleted_contains} 个CONTAINS关系"
+            }
+            
+        except Exception as e:
+            logger.error(f"Cleanup orphaned chunks failed: {e}")
+            return {"success": False, "error": str(e)}
+
+    def cleanup_chunks_without_vectors(self, database: Optional[str] = None) -> Dict[str, Any]:
+        """更新元数据：统计没有向量的Chunk数量"""
+        try:
+            with self._use_database(database):
+                with self._session() as sess:
+                    # 获取所有没有vec_id的Chunk
+                    result = sess.run("""
+                        MATCH (c:Chunk)
+                        WHERE c.vec_id IS NULL OR c.vec_id = ''
+                        RETURN count(c) as count
+                    """)
+                    orphaned_count = result.single()["count"]
+                    
+                    # 获取所有有vec_id的Chunk
+                    result = sess.run("""
+                        MATCH (c:Chunk)
+                        WHERE c.vec_id IS NOT NULL AND c.vec_id <> ''
+                        RETURN count(c) as count
+                    """)
+                    vectorized_count = result.single()["count"]
+                
+            return {
+                "success": True,
+                "orphaned_chunks": orphaned_count,
+                "vectorized_chunks": vectorized_count,
+                "summary": f"找到 {orphaned_count} 个没有向量的Chunk，{vectorized_count} 个有向量的Chunk"
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to check chunks without vectors: {e}")
+            return {"success": False, "error": str(e)}
+
+    def cleanup_all_orphaned_data(self, database: Optional[str] = None) -> Dict[str, Any]:
+        """统一清理函数：同时清理孤立向量和孤立Chunk"""
+        try:
+            result = {
+                "success": True,
+                "vectors": {"deleted": 0, "total": 0, "valid": 0, "error": None},
+                "chunks": {"deleted": 0, "mentions": 0, "contains": 0, "error": None},
+                "summary": ""
+            }
+            
+            # 1. 清理孤立向量
+            try:
+                vector_result = self.cleanup_isolated_vectors(database=database)
+                if vector_result.get("success"):
+                    result["vectors"]["deleted"] = vector_result.get("deleted_isolated_vectors", 0)
+                    result["vectors"]["total"] = vector_result.get("total_vectors", 0)
+                    result["vectors"]["valid"] = vector_result.get("valid_vectors", 0)
+                else:
+                    result["vectors"]["error"] = vector_result.get("error", "Unknown error")
+            except Exception as e:
+                logger.warning(f"Cleanup isolated vectors failed: {e}")
+                result["vectors"]["error"] = str(e)
+            
+            # 2. 清理孤立Chunk
+            try:
+                chunk_result = self.cleanup_orphaned_chunks(database=database)
+                if chunk_result.get("success"):
+                    result["chunks"]["deleted"] = chunk_result.get("deleted_chunks", 0)
+                    result["chunks"]["mentions"] = chunk_result.get("deleted_mentions", 0)
+                    result["chunks"]["contains"] = chunk_result.get("deleted_contains", 0)
+                else:
+                    result["chunks"]["error"] = chunk_result.get("error", "Unknown error")
+            except Exception as e:
+                logger.warning(f"Cleanup orphaned chunks failed: {e}")
+                result["chunks"]["error"] = str(e)
+            
+            # 生成摘要
+            summary_parts = []
+            if result["vectors"]["deleted"] > 0:
+                summary_parts.append(f"删除了 {result['vectors']['deleted']} 个孤立向量")
+            if result["chunks"]["deleted"] > 0:
+                summary_parts.append(f"删除了 {result['chunks']['deleted']} 个孤立Chunk")
+                if result["chunks"]["mentions"] > 0:
+                    summary_parts.append(f"{result['chunks']['mentions']} 个MENTIONS关系")
+                if result["chunks"]["contains"] > 0:
+                    summary_parts.append(f"{result['chunks']['contains']} 个CONTAINS关系")
+            
+            if summary_parts:
+                result["summary"] = "清理完成: " + ", ".join(summary_parts)
+            else:
+                result["summary"] = "未发现需要清理的数据"
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Cleanup all orphaned data failed: {e}")
+            return {"success": False, "error": str(e)}
+
+    def reconcile_legacy_vectors(
+        self,
+        database: str,
+        strategy: str = "migrate",
+        source_collection: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """收口历史全局向量到分库集合。
+
+        strategy:
+          - keep: 仅统计，不做修改
+          - migrate: 将确认属于当前database的向量迁移到分库collection，并从source移除对应项
+          - delete: 删除source中确认属于当前database的向量
+        """
+        if not psycopg2:
+            return {"success": False, "error": "psycopg2 module not found"}
+
+        db_name = (database or "").strip()
+        if not db_name:
+            return {"success": False, "error": "database is required"}
+
+        mode = (strategy or "migrate").strip().lower()
+        if mode not in ("keep", "migrate", "delete"):
+            return {"success": False, "error": f"invalid strategy: {strategy}"}
+
+        src_collection = (source_collection or self.pg_collection or "").strip()
+        target_collection = self.get_vector_collection_name(database=db_name)
+
+        # 仅用于确保 target collection 被创建
+        self._get_vector_store(database=db_name)
+
+        valid_vec_ids = set()
+        with self._use_database(db_name):
+            with self._session() as sess:
+                rows = sess.run(
+                    """
+                    MATCH (c:Chunk)
+                    WHERE c.vec_id IS NOT NULL AND c.vec_id <> ''
+                    RETURN c.vec_id AS vec_id
+                    """
+                )
+                for row in rows:
+                    vid = row.get("vec_id") if hasattr(row, "get") else row["vec_id"]
+                    if vid:
+                        valid_vec_ids.add(str(vid))
+
+        conn = psycopg2.connect(self.pg_conn)
+        try:
+            with conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT uuid FROM kg_pg_collection WHERE name = %s",
+                        (src_collection,),
+                    )
+                    src_row = cur.fetchone()
+                    if not src_row:
+                        return {
+                            "success": True,
+                            "database": db_name,
+                            "strategy": mode,
+                            "source_collection": src_collection,
+                            "target_collection": target_collection,
+                            "source_total": 0,
+                            "target_total": 0,
+                            "matched_with_database": 0,
+                            "moved": 0,
+                            "deleted_from_source": 0,
+                            "target_deduplicated": 0,
+                            "orphan_in_source": 0,
+                            "note": "source collection not found",
+                        }
+                    src_uuid = src_row[0]
+
+                    cur.execute(
+                        "SELECT uuid FROM kg_pg_collection WHERE name = %s",
+                        (target_collection,),
+                    )
+                    tgt_row = cur.fetchone()
+                    if not tgt_row:
+                        return {"success": False, "error": f"target collection not found: {target_collection}"}
+                    tgt_uuid = tgt_row[0]
+
+                    cur.execute(
+                        "SELECT custom_id FROM kg_pg_embedding WHERE collection_id = %s AND custom_id IS NOT NULL",
+                        (src_uuid,),
+                    )
+                    source_ids = [str(r[0]) for r in cur.fetchall() if r[0]]
+                    source_set = set(source_ids)
+
+                    cur.execute(
+                        "SELECT custom_id FROM kg_pg_embedding WHERE collection_id = %s AND custom_id IS NOT NULL",
+                        (tgt_uuid,),
+                    )
+                    target_set = {str(r[0]) for r in cur.fetchall() if r[0]}
+
+                    matched_ids = source_set.intersection(valid_vec_ids)
+                    orphan_ids = source_set.difference(valid_vec_ids)
+                    already_in_target = matched_ids.intersection(target_set)
+                    move_ids = matched_ids.difference(target_set)
+
+                    moved = 0
+                    deleted_from_source = 0
+
+                    if mode == "migrate" and src_uuid != tgt_uuid:
+                        if move_ids:
+                            cur.execute(
+                                """
+                                                                UPDATE kg_pg_embedding
+                                SET collection_id = %s
+                                WHERE collection_id = %s
+                                  AND custom_id = ANY(%s)
+                                """,
+                                (tgt_uuid, src_uuid, list(move_ids)),
+                            )
+                            moved = int(cur.rowcount or 0)
+
+                        # 已存在于目标集合的重复项，直接从source删除
+                        if already_in_target:
+                            cur.execute(
+                                "DELETE FROM kg_pg_embedding WHERE collection_id = %s AND custom_id = ANY(%s)",
+                                (src_uuid, list(already_in_target)),
+                            )
+                            deleted_from_source += int(cur.rowcount or 0)
+
+                    elif mode == "delete":
+                        if matched_ids:
+                            cur.execute(
+                                "DELETE FROM kg_pg_embedding WHERE collection_id = %s AND custom_id = ANY(%s)",
+                                (src_uuid, list(matched_ids)),
+                            )
+                            deleted_from_source += int(cur.rowcount or 0)
+
+                    # 对 target 做一次去重（同 custom_id 保留1条）
+                    cur.execute(
+                        """
+                        WITH dupes AS (
+                            SELECT uuid,
+                                   ROW_NUMBER() OVER (PARTITION BY custom_id ORDER BY uuid) AS rn
+                                                        FROM kg_pg_embedding
+                            WHERE collection_id = %s
+                              AND custom_id IS NOT NULL
+                        )
+                                                DELETE FROM kg_pg_embedding e
+                        USING dupes d
+                        WHERE e.uuid = d.uuid
+                          AND d.rn > 1
+                        """,
+                        (tgt_uuid,),
+                    )
+                    target_deduplicated = int(cur.rowcount or 0)
+
+                    cur.execute(
+                        "SELECT COUNT(*) FROM kg_pg_embedding WHERE collection_id = %s",
+                        (src_uuid,),
+                    )
+                    source_total_after = int((cur.fetchone() or [0])[0])
+
+                    cur.execute(
+                        "SELECT COUNT(*) FROM kg_pg_embedding WHERE collection_id = %s",
+                        (tgt_uuid,),
+                    )
+                    target_total_after = int((cur.fetchone() or [0])[0])
+
+                    return {
+                        "success": True,
+                        "database": db_name,
+                        "strategy": mode,
+                        "source_collection": src_collection,
+                        "target_collection": target_collection,
+                        "source_total": len(source_ids),
+                        "source_total_after": source_total_after,
+                        "target_total": len(target_set),
+                        "target_total_after": target_total_after,
+                        "matched_with_database": len(matched_ids),
+                        "moved": moved,
+                        "deleted_from_source": deleted_from_source,
+                        "target_deduplicated": target_deduplicated,
+                        "orphan_in_source": len(orphan_ids),
+                    }
+        except Exception as e:
+            logger.error(f"Reconcile legacy vectors failed: {e}")
+            return {"success": False, "error": str(e)}
+        finally:
+            conn.close()
+

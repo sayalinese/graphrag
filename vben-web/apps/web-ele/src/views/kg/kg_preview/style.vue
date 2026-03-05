@@ -27,6 +27,7 @@ function createLabel(nodeLabel: string, radius: number, categoryColor: string) {
   label.borderWidth = 1.2;
   label.padding = [4, 8];
   label.fontWeight = '600';
+  label.borderRadius = 6;
   const sprite = label as unknown as {
     material?: { depthWrite: boolean };
     position: { set: (x: number, y: number, z: number) => void };

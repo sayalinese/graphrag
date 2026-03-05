@@ -346,7 +346,7 @@ class EmbeddingService:
             
             with engine.connect() as conn:
                 # 1. Get collection_uuid
-                result = conn.execute(text("SELECT uuid FROM langchain_pg_collection WHERE name = :name"), {"name": collection_name})
+                result = conn.execute(text("SELECT uuid FROM kg_pg_collection WHERE name = :name"), {"name": collection_name})
                 row = result.fetchone()
                 if not row:
                     return
@@ -355,7 +355,7 @@ class EmbeddingService:
                 # 2. Delete embeddings
                 # Note: cmetadata is usually a jsonb column
                 conn.execute(
-                    text("DELETE FROM langchain_pg_embedding WHERE collection_id = :coll_id AND cmetadata ->> 'doc_id' = :doc_id"),
+                    text("DELETE FROM kg_pg_embedding WHERE collection_id = :coll_id AND cmetadata ->> 'doc_id' = :doc_id"),
                     {"coll_id": collection_uuid, "doc_id": str(doc_id)}
                 )
                 conn.commit()

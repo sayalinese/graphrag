@@ -1,15 +1,13 @@
 <script lang="ts" setup>
-import { computed, ref, watch, onMounted } from 'vue'
-import { ElOption, ElSelect, ElButton, ElTooltip, ElIcon, ElInput } from 'element-plus'
+import { ref, watch, onMounted } from 'vue'
+import { ElOption, ElSelect, ElTooltip, ElIcon, ElInput } from 'element-plus'
 import {
   Operation,
-  Close,
   Brush,
   Refresh,
   Loading,
   Search,
   CollectionTag,
-  ArrowDown,
   Connection,
   RefreshLeft,
   Fold,
@@ -21,6 +19,7 @@ interface ParamState {
   searchKeyword: string
   selectedCategory: string
   selectedDatabase: string
+  graphLimit: number
   showLabels: boolean
   showEdges: boolean
   nodeSize: number
@@ -35,6 +34,7 @@ const props = withDefaults(defineProps<{
     searchKeyword: '',
     selectedCategory: '',
     selectedDatabase: '',
+    graphLimit: 300,
     showLabels: true,
     showEdges: true,
     nodeSize: 1,
@@ -56,13 +56,6 @@ const styleOptions = [
   { label: '木星', value: 'style1' },
   { label: '海王星', value: 'style2' }
 ]
-
-const currentStyleLabel = computed(() => {
-  if (styleOptions.length === 0) return '默认样式'
-  const match = styleOptions.find(option => option.value === localState.value.nodeStyle)
-  return match ? match.label : styleOptions[0]?.label ?? '默认样式'
-})
-
 
 const categories = [
   { label: '全部', value: '' },
@@ -239,6 +232,23 @@ onMounted(() => {
         />
       </ElSelect>
   
+    </div>
+
+    <!-- 图谱加载上限 -->
+    <div class="mb-6">
+      <div class="flex justify-between items-center mb-3">
+        <label class="text-gray-400 text-xs font-medium uppercase tracking-wider">图谱加载上限</label>
+        <span class="text-cyan-400 text-xs font-mono bg-cyan-500/10 px-2 py-0.5 rounded">{{ localState.graphLimit }}</span>
+      </div>
+      <input
+        v-model.number="localState.graphLimit"
+        type="range"
+        min="100"
+        max="5000"
+        step="100"
+        class="w-full h-1.5 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-cyan-500"
+      />
+      <p class="mt-2 text-xs text-gray-500">建议 500~2000，过大可能导致 3D 渲染卡顿</p>
     </div>
 
     <!-- 显示选项 -->

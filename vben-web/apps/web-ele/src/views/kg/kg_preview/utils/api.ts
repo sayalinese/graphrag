@@ -147,7 +147,7 @@ export interface AskKgResponse {
 export async function hybridSearch(
   question: string,
   strategy: SearchStrategy = 'auto',
-  topK: number = 5,
+  topK: number = 20,
   chatHistory: ChatHistoryItem[] = [],
   sessionId?: string,
   docId?: string,
@@ -234,13 +234,15 @@ export async function deleteKgSession(sessionId: string): Promise<void> {
  */
 export async function localSearch(
   question: string,
-  topK: number = 5
+  topK: number = 5,
+  database: string
 ): Promise<LocalSearchResult> {
   const axiosResponse = await baseRequestClient.post<ApiResponse<LocalSearchResult>>(
     '/kg/graphrag/local_search',
     {
       question,
       top_k: topK,
+      database,
     }
   );
   const response = axiosResponse.data as unknown as ApiResponse<LocalSearchResult>;
@@ -255,13 +257,15 @@ export async function localSearch(
  */
 export async function globalSearch(
   question: string,
-  maxCommunities: number = 10
+  maxCommunities: number = 10,
+  database: string
 ): Promise<GlobalSearchResult> {
   const axiosResponse = await baseRequestClient.post<ApiResponse<GlobalSearchResult>>(
     '/kg/graphrag/global_search',
     {
       question,
       max_communities: maxCommunities,
+      database,
     }
   );
   const response = axiosResponse.data as unknown as ApiResponse<GlobalSearchResult>;
@@ -290,7 +294,7 @@ export async function getGraphStats(): Promise<{
 /**
  * 鐟欙箑褰傜粈鎯у隘濡偓濞?
  */
-export async function detectCommunities(): Promise<{
+export async function detectCommunities(database: string): Promise<{
   success: boolean;
   communities: Array<{
     community_id: number;
@@ -302,7 +306,8 @@ export async function detectCommunities(): Promise<{
   error?: string;
 }> {
   const axiosResponse = await baseRequestClient.post<ApiResponse<any>>(
-    '/kg/graphrag/detect_communities'
+    '/kg/graphrag/detect_communities',
+    { database }
   );
   const response = axiosResponse.data as unknown as ApiResponse<any>;
   if (!response.success) {
@@ -314,13 +319,14 @@ export async function detectCommunities(): Promise<{
 /**
  * 閻㈢喐鍨氶幍鈧張澶屻仦閸栫儤濮ら崨?
  */
-export async function generateCommunityReports(): Promise<{
+export async function generateCommunityReports(database: string): Promise<{
   success: boolean;
   total_communities: number;
   generated_reports: number;
 }> {
   const axiosResponse = await baseRequestClient.post<ApiResponse<any>>(
-    '/kg/graphrag/generate_reports'
+    '/kg/graphrag/generate_reports',
+    { database }
   );
   const response = axiosResponse.data as unknown as ApiResponse<any>;
   if (!response.success) {

@@ -1,9 +1,10 @@
 <script lang="ts" setup>
-import { ref } from 'vue';
+import { onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 
 import KgChatWindow from '../kg_preview/components/KgChatWindow.vue';
 import KgGraph2D from './components/KgGraph2D.vue';
+import { baseRequestClient } from '#/api/request';
 
 interface HighlightPayload {
   seedNodeIds?: string[];
@@ -17,30 +18,27 @@ const router = useRouter();
 const graph2dRef = ref<InstanceType<typeof KgGraph2D> | null>(null);
 const selectedDocId = ref('');
 
+onMounted(async () => {
+  try {
+    const res = await baseRequestClient.get<any>('/kg/databases');
+    const dbs: Array<{ name: string; default: boolean }> =
+      res?.data?.data?.databases || res?.data?.databases || [];
+    // 优先选非默认、非 system 的数据库（即项目实际知识库）
+    const pick =
+      dbs.find((d) => !d.default && d.name !== 'system') ||
+      dbs.find((d) => d.name !== 'system');
+    if (pick) selectedDocId.value = pick.name;
+  } catch {
+    // 如果接口不可用，保持空字符串
+  }
+});
+
 function goBack() {
   router.push('/kg/preview');
 }
 
 function handleKgHighlight(payload: HighlightPayload) {
   if (!graph2dRef.value) return;
-  const payloadGraphNodes = Array.isArray(payload.graph?.nodes)
-    ? payload.graph.nodes.length
-    : 0;
-  const payloadGraphEdges = Array.isArray(payload.graph?.edges)
-    ? payload.graph.edges.length
-    : (Array.isArray(payload.graph?.links)
-      ? payload.graph.links.length
-      : 0);
-
-  // console.info('[Explain2D]', {
-  //   phase: 'page-forward',
-  //   payloadGraphNodes,
-  //   payloadGraphEdges,
-  //   seedNodeIds: payload.seedNodeIds ?? [],
-  //   nodeIds: payload.nodeIds ?? [],
-  //   linkIds: payload.linkIds ?? [],
-  //   maxDepth: payload.maxDepth ?? 3,
-  // });
 
   graph2dRef.value.highlightByWaves({
     ...payload,

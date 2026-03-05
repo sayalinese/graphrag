@@ -220,10 +220,7 @@ function buildPathSubgraph(base: NormalizedGraph, payload: HighlightPayload): Pa
   const requestedSeedIds = new Set((payload.seedNodeIds ?? []).map((i) => normalizeNodeId(i)).filter((id) => id && existingNodeIds.has(id)));
 
   const selected = new Map<string, ExplainLink>();
-  let performFiltering = false;
-
   if (requestedSeedIds.size > 0 && base.links.length > 0) {
-    performFiltering = true;
     const adjacency = new Map<string, Array<{ edge: ExplainLink; next: string }>>();
     base.links.forEach((link) => {
       if (!adjacency.has(link.sourceId)) adjacency.set(link.sourceId, []);
@@ -293,7 +290,7 @@ function refreshGraph() {
   graph?.refresh?.();
 }
 
-function attemptZoomToFit(reason: string, requestId = zoomRequestId) {
+function attemptZoomToFit(_reason: string, requestId = zoomRequestId) {
   if (!graph) return;
   if (requestId <= zoomAppliedId) return;
 
@@ -509,6 +506,16 @@ function initGraph() {
   updateSize();
   resizeObserver = new ResizeObserver(() => updateSize());
   resizeObserver.observe(containerRef.value);
+
+  if (renderedGraph.value.nodes.length > 0 || renderedGraph.value.links.length > 0) {
+    graph.graphData({
+      nodes: renderedGraph.value.nodes.map((n) => ({ ...n })),
+      links: renderedGraph.value.links.map((l) => ({ ...l })),
+    });
+    graph.d3ReheatSimulation?.();
+    refreshGraph();
+    requestZoomToFit('init-replay', 260);
+  }
 }
 
 function applyRenderedGraph(graphData: NormalizedGraph, sourceTag: string, chainNodePaths: string[][] = []) {

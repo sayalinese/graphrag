@@ -1,6 +1,5 @@
 <script lang="ts" setup>
-import { reactive, ref } from 'vue';
-import { useRouter } from 'vue-router';
+import { onMounted, reactive, ref } from 'vue';
 import { ElButton, ElTooltip } from 'element-plus';
 import { ChatDotRound, Operation } from '@element-plus/icons-vue';
 
@@ -8,6 +7,7 @@ import KgChatWindow from './components/KgChatWindow.vue';
 import Graph from './graph.vue';
 import Parameter from './parameter.vue';
 import type { EntityInfo } from './utils/api';
+import { baseRequestClient } from '#/api/request';
 
 interface KgHighlightPayload {
   seedNodeIds: string[];
@@ -30,12 +30,11 @@ interface GraphExpose {
   ) => void;
 }
 
-const router = useRouter();
-
 const params = reactive({
   searchKeyword: '',
   selectedCategory: '',
   selectedDatabase: '',
+  graphLimit: 300,
   showLabels: true,
   showEdges: true,
   nodeSize: 1,
@@ -47,6 +46,22 @@ const graphRef = ref<GraphExpose>();
 const showChat = ref(true);
 const showParam = ref(true);
 const chatPanelWidth = ref(430);
+
+onMounted(async () => {
+  try {
+    const res = await baseRequestClient.get<any>('/kg/databases');
+    const dbs: Array<{ name: string; default: boolean }> =
+      res?.data?.data?.databases || res?.data?.databases || [];
+    const pick =
+      dbs.find((d) => !d.default && d.name !== 'system') ||
+      dbs.find((d) => d.name !== 'system');
+    if (pick && !params.selectedDatabase) {
+      params.selectedDatabase = pick.name;
+    }
+  } catch {
+    // 保持默认空字符串
+  }
+});
 
 const handleParamUpdate = (newParams: typeof params) => {
   Object.assign(params, newParams);
@@ -282,9 +297,6 @@ const handleKgHighlight = (payload: KgHighlightPayload) => {
   });
 };
 
-const goExplain = () => {
-  router.push('/kg/explain');
-};
 </script>
 
 <template>
@@ -295,6 +307,7 @@ const goExplain = () => {
         :search-keyword="params.searchKeyword"
         :selected-category="params.selectedCategory"
         :selected-database="params.selectedDatabase"
+        :graph-limit="params.graphLimit"
         :show-labels="params.showLabels"
         :show-edges="params.showEdges"
         :node-size="params.nodeSize"

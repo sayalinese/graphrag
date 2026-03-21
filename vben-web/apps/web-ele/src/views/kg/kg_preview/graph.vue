@@ -79,6 +79,7 @@ let particleSetupScheduled = false;
 let particleAutoRotateActive = true;
 let currentAnimationId = 0;
 let graphLimitFetchTimer: null | ReturnType<typeof setTimeout> = null;
+let focusZoomTimer: null | ReturnType<typeof setTimeout> = null;
 
 // 图谱数据缓存（使用 sessionStorage）
 const GRAPH_CACHE_KEY = 'kg_graph_cache';
@@ -161,15 +162,12 @@ function clearGraphCache(): void {
 // 高亮状态
 const highlightedNodeIds = shallowRef<Set<string>>(new Set());
 const highlightedLinkIds = shallowRef<Set<string>>(new Set());
+const focusedNodeIds = shallowRef<Set<string>>(new Set());
+const focusedLinkIds = shallowRef<Set<string>>(new Set());
+const focusedSeedNodeIds = shallowRef<Set<string>>(new Set());
 const isHighlightActive = computed(
   () => highlightedNodeIds.value.size > 0 || highlightedLinkIds.value.size > 0,
 );
-
-// 高亮时保存的原始位置（用于恢复）
-const originalNodePositions = shallowRef<
-  Map<string, { x: number; y: number; z: number }>
->(new Map());
-const isAnimating = ref(false);
 
 function ensureThree() {
   return threeLib;
@@ -183,6 +181,7 @@ interface GraphNode extends NodeObject {
 }
 
 interface GraphEdge extends LinkObject<GraphNode> {
+  id?: string;
   source: string;
   target: string;
   label: string;
@@ -195,6 +194,14 @@ interface VisualizerData {
   nodes: GraphNode[];
   edges: GraphEdge[];
 }
+
+interface IncomingGraphPayload {
+  nodes?: unknown[];
+  edges?: unknown[];
+  links?: unknown[];
+}
+
+const focusedGraphData = shallowRef<null | VisualizerData>(null);
 
 function fallbackNormalizeGraph(rawNodes: unknown[], rawEdges: unknown[]): VisualizerData {
   const nodes: GraphNode[] = (Array.isArray(rawNodes) ? rawNodes : [])
@@ -210,12 +217,13 @@ function fallbackNormalizeGraph(rawNodes: unknown[], rawEdges: unknown[]): Visua
   const nodeIdSet = new Set(nodes.map((n) => n.id));
 
   const edges: GraphEdge[] = (Array.isArray(rawEdges) ? rawEdges : [])
-    .map((item: any) => {
+    .map((item: any, index) => {
       const source = String(item?.source ?? item?.from ?? item?.start ?? '');
       const target = String(item?.target ?? item?.to ?? item?.end ?? '');
       const label = String(item?.label ?? item?.type ?? 'RELATED_TO');
       const value = Number(item?.value ?? item?.weight ?? 1) || 1;
-      return { source, target, label, value } as GraphEdge;
+      const id = String(item?.id ?? `${source}-${target}#${index}`);
+      return { id, source, target, label, value } as GraphEdge;
     })
     .filter((edge) => {
       if (!edge.source || !edge.target) return false;
@@ -441,7 +449,7 @@ function normalizeBackendGraph(
   });
 
   const edges: GraphEdge[] = [];
-  rawEdges.forEach((rawEdge) => {
+  rawEdges.forEach((rawEdge, index) => {
     const edgeObj = toPlainObject(rawEdge);
     if (!edgeObj) return;
     const source = resolveEndpoint(edgeObj, [
@@ -498,11 +506,25 @@ function normalizeBackendGraph(
     const properties =
       edgeObj.properties || edgeObj.props || edgeObj.data || {};
 
+    const edgeIdCandidate = pickFromContainers(edgeObj, [
+      'id',
+      'edgeId',
+      'relationshipId',
+      'rel_id',
+    ]);
+    const edgeId =
+      typeof edgeIdCandidate === 'string' && edgeIdCandidate.trim() !== ''
+        ? edgeIdCandidate
+        : typeof edgeIdCandidate === 'number'
+          ? String(edgeIdCandidate)
+          : `${source}-${target}#${index}`;
+
     // 提取 description（优先从 properties 中获取，也可能在顶层）
     const description =
       edgeObj.description || properties.description || properties.desc || '';
 
     edges.push({
+      id: edgeId,
       source,
       target,
       label: description || label, // 优先显示 description
@@ -701,8 +723,9 @@ const relationMap = ref<Record<string, string>>({});
 
 const filteredGraph = computed<{ edges: GraphEdge[]; nodes: GraphNode[] }>(
   () => {
+    const sourceGraph = focusedGraphData.value ?? graphData.value;
     const keyword = props.searchKeyword.trim().toLowerCase();
-    const nodes = graphData.value.nodes.filter((node: GraphNode) => {
+    let nodes = sourceGraph.nodes.filter((node: GraphNode) => {
       const matchesKeyword =
         keyword === '' || node.label.toLowerCase().includes(keyword);
       const matchesCategory =
@@ -711,13 +734,30 @@ const filteredGraph = computed<{ edges: GraphEdge[]; nodes: GraphNode[] }>(
       return matchesKeyword && matchesCategory;
     });
 
+    if (focusedNodeIds.value.size > 0) {
+      nodes = nodes.filter((node: GraphNode) => focusedNodeIds.value.has(node.id));
+    }
+
     const visibleIds = new Set(nodes.map((node: GraphNode) => node.id));
-    const edges = props.showEdges
-      ? graphData.value.edges.filter(
+    let edges = props.showEdges
+      ? sourceGraph.edges.filter(
           (edge: GraphEdge) =>
             visibleIds.has(edge.source) && visibleIds.has(edge.target),
         )
       : [];
+
+    if (focusedLinkIds.value.size > 0) {
+      edges = edges.filter((edge: GraphEdge) => {
+        const direct = `${edge.source}-${edge.target}`;
+        const reverse = `${edge.target}-${edge.source}`;
+        const edgeId = String(edge.id ?? '');
+        return (
+          (edgeId !== '' && focusedLinkIds.value.has(edgeId)) ||
+          focusedLinkIds.value.has(direct) ||
+          focusedLinkIds.value.has(reverse)
+        );
+      });
+    }
 
     return { nodes, edges };
   },
@@ -764,11 +804,18 @@ function getLinkColor(link: GraphEdge): string {
   const targetHighlighted = highlightedNodeIds.value.has(targetId);
 
   if (!sourceHighlighted || !targetHighlighted) {
-    return 'rgba(0,0,0,0)'; // 完全透明
+    // 高亮时，非路径区域连线不再完全隐藏，保留弱可见背景，避免“线消失”错觉
+    return 'rgba(102,128,255,0.08)';
   }
 
-  // 高亮模式下，默认连线透明度为 0 (不可见)，等待动画过渡到 0.8
-  return 'rgba(102, 128, 255, 0)';
+  const linkKey = `${sourceId}-${targetId}`;
+  const linkKeyReverse = `${targetId}-${sourceId}`;
+  const isHighlighted =
+    highlightedLinkIds.value.has(linkKey) ||
+    highlightedLinkIds.value.has(linkKeyReverse);
+
+  // 路径上的边保持弱可见，叠加 pipe 动画后更接近 explain 的逐步显现
+  return isHighlighted ? 'rgba(102,128,255,0.2)' : 'rgba(102,128,255,0.1)';
 }
 
 function getLinkWidth(link: GraphEdge): number {
@@ -784,7 +831,7 @@ function getLinkWidth(link: GraphEdge): number {
   const sourceHighlighted = highlightedNodeIds.value.has(sourceId);
   const targetHighlighted = highlightedNodeIds.value.has(targetId);
   if (!sourceHighlighted || !targetHighlighted) {
-    return 0;
+    return baseWidth * 0.25;
   }
 
   const linkKey = `${sourceId}-${targetId}`;
@@ -800,10 +847,62 @@ function shouldUseDemoData(): boolean {
   return false;
 }
 
+function normalizeIncomingGraphPayload(
+  payload?: IncomingGraphPayload,
+): null | VisualizerData {
+  if (!payload) return null;
+  const nodes = Array.isArray(payload.nodes) ? payload.nodes : [];
+  const edges = Array.isArray(payload.edges)
+    ? payload.edges
+    : Array.isArray(payload.links)
+      ? payload.links
+      : [];
+  if (!nodes.length && !edges.length) return null;
+
+  let normalized = normalizeBackendGraph(nodes, edges);
+  if (!hasGraphContent(normalized)) {
+    normalized = fallbackNormalizeGraph(nodes, edges);
+  }
+  return hasGraphContent(normalized) ? normalized : null;
+}
+
 function resolveNodeRenderer(styleKey: string) {
   const renderer = nodeStyleDefinitions[styleKey];
   if (renderer) return renderer;
   return nodeStyleDefinitions.style1 ?? Object.values(nodeStyleDefinitions)[0];
+}
+
+function shouldShowDenseLabel(node: GraphNode): boolean {
+  if (!props.showLabels) return false;
+  if (focusedNodeIds.value.size === 0) return true;
+
+  const focusedCount = focusedNodeIds.value.size;
+  if (focusedCount <= 24) return true;
+  if (focusedSeedNodeIds.value.has(node.id)) return true;
+
+  const value = Number(node.value ?? 1);
+  if (focusedCount <= 60) {
+    return value >= 3;
+  }
+  return value >= 6;
+}
+
+function scheduleFocusZoomToFit(duration = 900, padding = 80, delay = 260) {
+  if (!graphInstance) return;
+  if (focusZoomTimer) {
+    clearTimeout(focusZoomTimer);
+  }
+  focusZoomTimer = setTimeout(() => {
+    if (!graphInstance) return;
+    const focusedSet = focusedNodeIds.value;
+    if (focusedSet.size === 0) return;
+    (graphInstance as any).zoomToFit?.(
+      duration,
+      padding,
+      (node: any) => focusedSet.has(String(node?.id ?? '')),
+    );
+    focusZoomTimer = null;
+  }, delay);
 }
 
 function createNodeObject(node: GraphNode): any {
@@ -821,7 +920,7 @@ function createNodeObject(node: GraphNode): any {
     node,
     getCategoryColor,
     nodeSize: props.nodeSize,
-    showLabels: props.showLabels,
+    showLabels: shouldShowDenseLabel(node),
   });
   if (rendered) return rendered;
   const fallbackLabel = new SpriteText(node.label);
@@ -927,7 +1026,7 @@ function refreshLinkAppearance() {
 
 function applyLinkStyles() {
   if (!graphInstance) return;
-  graphInstance.linkOpacity(isHighlightActive.value ? 0.1 : 0.45);
+  graphInstance.linkOpacity(isHighlightActive.value ? 0.28 : 0.45);
   graphInstance.linkWidth((link) => getLinkWidth(link as GraphEdge));
   graphInstance.linkColor((link) => getLinkColor(link as GraphEdge));
   graphInstance.linkDirectionalParticles(props.showEdges ? 2 : 0);
@@ -1311,6 +1410,10 @@ onBeforeUnmount(() => {
     clearTimeout(graphLimitFetchTimer);
     graphLimitFetchTimer = null;
   }
+  if (focusZoomTimer) {
+    clearTimeout(focusZoomTimer);
+    focusZoomTimer = null;
+  }
   disposeParticleBackground();
   if (graphInstance) {
     (graphInstance as unknown as { _destructor?: () => void })._destructor?.();
@@ -1319,430 +1422,104 @@ onBeforeUnmount(() => {
 });
 
 function clearHighlight() {
-  // 停止所有正在进行的动画
   currentAnimationId++;
+  focusedGraphData.value = null;
+  focusedNodeIds.value.clear();
+  focusedLinkIds.value.clear();
+  focusedSeedNodeIds.value.clear();
+  highlightedNodeIds.value.clear();
+  highlightedLinkIds.value.clear();
 
-  if (!graphInstance || isAnimating.value) return;
-
-  // 如果有保存的原始位置，先恢复节点位置
-  if (originalNodePositions.value.size > 0) {
-    isAnimating.value = true;
-    const { nodes } = graphInstance.graphData();
-
-    // 动画恢复原始位置
-    animateNodesToPositions(nodes, originalNodePositions.value, 400, () => {
-      const currentGraph = graphInstance;
-      if (!currentGraph) {
-        isAnimating.value = false;
-        return;
-      }
-      originalNodePositions.value.clear();
-      highlightedNodeIds.value.clear();
-      highlightedLinkIds.value.clear();
-
-      // RESTORE Manually
-      const { nodes, links } = currentGraph.graphData();
-      nodes.forEach((n: any) => {
-        if (!n.__threeObj) return;
-        n.__threeObj.traverse((c: any) => {
-          if (c.material) {
-            c.material.opacity = 1;
-            c.material.transparent = false;
-            c.material.needsUpdate = true;
-          }
-        });
-        const origScale = n.__threeObj.userData.originalScale;
-        if (origScale) n.__threeObj.scale.copy(origScale);
-      });
-      links.forEach((l: any) => {
-        if (!l.__threeObj) return;
-        l.__threeObj.traverse((c: any) => {
-          if (c.userData.isPipe || c.userData.isLabel) {
-            c.visible = false;
-          }
-        });
-      });
-
-      applyLinkStyles();
-      isAnimating.value = false;
-    });
-  } else {
-    highlightedNodeIds.value.clear();
-    highlightedLinkIds.value.clear();
-
-    // RESTORE Manually
-    const { nodes, links } = graphInstance.graphData();
-    nodes.forEach((n: any) => {
-      if (!n.__threeObj) return;
-      n.__threeObj.traverse((c: any) => {
-        if (c.material) {
-          c.material.opacity = 1;
-          c.material.transparent = false;
-          c.material.needsUpdate = true;
-        }
-      });
-      const origScale = n.__threeObj.userData.originalScale;
-      if (origScale) n.__threeObj.scale.copy(origScale);
-    });
-    links.forEach((l: any) => {
-      if (!l.__threeObj) return;
-      l.__threeObj.traverse((c: any) => {
-        if (c.userData.isPipe || c.userData.isLabel) {
-          c.visible = false;
-        }
-      });
-    });
-
-    applyLinkStyles();
-  }
-}
-
-// 动画过渡节点到目标位置
-function animateNodesToPositions(
-  nodes: any[],
-  targetPositions: Map<string, { x: number; y: number; z: number }>,
-  duration: number,
-  onComplete?: () => void,
-) {
   if (!graphInstance) return;
 
-  const startTime = performance.now();
-  const startPositions = new Map<string, { x: number; y: number; z: number }>();
-
-  // 记录起始位置
-  nodes.forEach((node: any) => {
-    if (targetPositions.has(node.id)) {
-      startPositions.set(node.id, {
-        x: node.x || 0,
-        y: node.y || 0,
-        z: node.z || 0,
-      });
-    }
-  });
-
-  function animate() {
-    const elapsed = performance.now() - startTime;
-    const progress = Math.min(elapsed / duration, 1);
-
-    // 使用 easeOutCubic 缓动函数
-    const eased = 1 - (1 - progress) ** 3;
-
-    nodes.forEach((node: any) => {
-      const start = startPositions.get(node.id);
-      const target = targetPositions.get(node.id);
-      if (start && target) {
-        node.x = start.x + (target.x - start.x) * eased;
-        node.y = start.y + (target.y - start.y) * eased;
-        node.z = start.z + (target.z - start.z) * eased;
-      }
-    });
-
-    graphInstance?.refresh();
-
-    if (progress < 1) {
-      requestAnimationFrame(animate);
-    } else {
-      onComplete?.();
-    }
-  }
-
-  requestAnimationFrame(animate);
-}
-
-// 简单的力导向布局（用于高亮子图的紧凑排列）
-
-// 缓动函数（ease-in-cubic）
-function easeOutCubic(t: number): number {
-  return 1 - (1 - t) ** 3;
-}
-
-function highlightElements(nodeIds: string[], linkIds: string[]) {
-  if (!graphInstance) return;
-
-  // 1. 状态重置与初始化
-  currentAnimationId++;
-  const animationId = currentAnimationId;
-
-  highlightedNodeIds.value = new Set(nodeIds);
-  highlightedLinkIds.value = new Set(linkIds);
-
+  updateGraphData();
   applyLinkStyles();
 
-  requestAnimationFrame(() => {
-    if (currentAnimationId !== animationId) return;
-    const currentGraph = graphInstance;
-    if (!currentGraph) return;
-
-    const { links, nodes } = currentGraph.graphData();
-    const nodeMap = new Map(nodes.map((n: any) => [n.id, n]));
-
-    nodes.forEach((n: any) => {
-      if (!n.__threeObj) return;
-      const obj = n.__threeObj;
-      if (!highlightedNodeIds.value.has(n.id)) {
-        if (obj.material) {
-          obj.material.opacity = 0.1;
-          obj.material.transparent = true;
-        } else if (obj.children) {
-          obj.traverse((c: any) => {
-            if (c.material) {
-              c.material.opacity = 0.1;
-              c.material.transparent = true;
-            }
-          });
-        }
+  const { links } = graphInstance.graphData();
+  links.forEach((l: any) => {
+    if (!l.__threeObj) return;
+    l.__threeObj.traverse((c: any) => {
+      if (c.userData?.isPipe || c.userData?.isLabel) {
+        c.visible = false;
       }
     });
-
-    nodeIds.forEach((id) => {
-      const node = nodeMap.get(id);
-      if (node && node.__threeObj) {
-        const obj = node.__threeObj;
-        if (!obj.userData.originalScale) {
-          obj.userData.originalScale = obj.scale.clone();
-        }
-        obj.scale.set(0.01, 0.01, 0.01);
-
-        if (obj.material) {
-          obj.material.opacity = 0.1;
-          obj.material.transparent = true;
-        } else if (obj.children) {
-          obj.traverse((c: any) => {
-            if (c.material) {
-              c.material.opacity = 0.1;
-              c.material.transparent = true;
-            }
-          });
-        }
-      }
-    });
-
-    const adjacency = new Map<
-      string,
-      Array<{ linkId: string; neighbor: string }>
-    >();
-    const subsetNodeSet = new Set(nodeIds);
-    const subsetLinkSet = new Set(linkIds);
-    const linkObjMap = new Map<string, any>();
-
-    links.forEach((edge: any) => {
-      const sourceId =
-        typeof edge.source === 'object' ? edge.source.id : edge.source;
-      const targetId =
-        typeof edge.target === 'object' ? edge.target.id : edge.target;
-      const linkKey = `${sourceId}-${targetId}`;
-      const linkKeyReverse = `${targetId}-${sourceId}`;
-
-      if (edge.__threeObj) {
-        linkObjMap.set(linkKey, edge.__threeObj);
-        linkObjMap.set(linkKeyReverse, edge.__threeObj);
-      }
-
-      if (
-        (subsetLinkSet.has(linkKey) || subsetLinkSet.has(linkKeyReverse)) &&
-        subsetNodeSet.has(sourceId) &&
-        subsetNodeSet.has(targetId)
-      ) {
-        const validLinkId = subsetLinkSet.has(linkKey)
-          ? linkKey
-          : linkKeyReverse;
-
-        if (!adjacency.has(sourceId)) adjacency.set(sourceId, []);
-        if (!adjacency.has(targetId)) adjacency.set(targetId, []);
-
-        adjacency
-          .get(sourceId)
-          ?.push({ neighbor: targetId, linkId: validLinkId });
-        adjacency
-          .get(targetId)
-          ?.push({ neighbor: sourceId, linkId: validLinkId });
-      }
-    });
-
-    interface QueueItem {
-      id: string;
-      depth: number;
-    }
-    const queue: QueueItem[] = [];
-    const depthMap = new Map<string, number>();
-    const linkDepthMap = new Map<string, number>();
-    const remainingNodes = new Set(nodeIds);
-
-    let currentDeepest = 0;
-
-    while (remainingNodes.size > 0) {
-      if (queue.length === 0) {
-        const nextStart = remainingNodes.values().next().value;
-        if (!nextStart) break;
-        queue.push({ id: nextStart, depth: 0 });
-        depthMap.set(nextStart, 0);
-      }
-
-      while (queue.length > 0) {
-        const { id: currentId, depth: currentDepth } = queue.shift()!;
-        remainingNodes.delete(currentId);
-
-        const neighbors = adjacency.get(currentId) || [];
-        for (const { neighbor, linkId } of neighbors) {
-          const neighborDepth = currentDepth + 1;
-
-          if (
-            !depthMap.has(neighbor) ||
-            depthMap.get(neighbor)! > neighborDepth
-          ) {
-            depthMap.set(neighbor, neighborDepth);
-            linkDepthMap.set(linkId, neighborDepth);
-            queue.push({ id: neighbor, depth: neighborDepth });
-            if (neighborDepth > currentDeepest) {
-              currentDeepest = neighborDepth;
-            }
-          } else if (!linkDepthMap.has(linkId)) {
-            linkDepthMap.set(linkId, currentDepth);
-          }
-        }
-      }
-    }
-
-    const WAVE_DELAY = 150;
-    const DURATION = 600;
-    const linkFadeDuration = 800;
-    const globalStartTime = performance.now();
-
-    const maxDelay = currentDeepest * WAVE_DELAY;
-    const totalDuration = maxDelay + DURATION + 500;
-
-    const animateFrame = () => {
-      if (currentAnimationId !== animationId) return;
-
-      const now = performance.now();
-      const elapsedSinceStart = now - globalStartTime;
-      let isAnyAnimating = false;
-
-      nodeIds.forEach((nodeId) => {
-        const depth = depthMap.get(nodeId) ?? 0;
-        const delay = depth * WAVE_DELAY;
-        const localElapsed = elapsedSinceStart - delay;
-
-        if (localElapsed >= 0 && localElapsed < DURATION) {
-          isAnyAnimating = true;
-          const progress = localElapsed / DURATION;
-          const eased = easeOutCubic(progress);
-
-          const nodeObj = nodeMap.get(nodeId);
-          if (nodeObj && nodeObj.__threeObj) {
-            const obj = nodeObj.__threeObj;
-
-            const currentOpacity = 0.1 + 0.9 * eased;
-
-            let currentScale = eased;
-            currentScale =
-              progress > 0.8
-                ? 1.05 - (progress - 0.8) * 0.25
-                : Math.min(progress * 1.3125, 1.05);
-
-            const origScale = obj.userData.originalScale || {
-              x: 1,
-              y: 1,
-              z: 1,
-            };
-            obj.scale.set(
-              origScale.x * currentScale,
-              origScale.y * currentScale,
-              origScale.z * currentScale,
-            );
-
-            if (obj.material) {
-              obj.material.opacity = currentOpacity;
-              obj.material.transparent = true;
-            } else if (obj.children) {
-              obj.traverse((child: any) => {
-                if (child.material) {
-                  child.material.opacity = currentOpacity;
-                  child.material.transparent = true;
-                }
-              });
-            }
-          }
-        } else if (localElapsed >= DURATION) {
-          const nodeObj = nodeMap.get(nodeId);
-          if (nodeObj && nodeObj.__threeObj) {
-            const obj = nodeObj.__threeObj;
-            const origScale = obj.userData.originalScale || {
-              x: 1,
-              y: 1,
-              z: 1,
-            };
-            obj.scale.set(origScale.x, origScale.y, origScale.z);
-
-            if (obj.material) {
-              obj.material.opacity = 1;
-              obj.material.transparent = false;
-              obj.material.needsUpdate = true;
-            } else if (obj.children) {
-              obj.traverse((child: any) => {
-                if (child.material) {
-                  child.material.opacity = 1;
-                  child.material.transparent = false;
-                  child.material.needsUpdate = true;
-                }
-              });
-            }
-          }
-        }
-      });
-
-      linkIds.forEach((linkId) => {
-        const depth = linkDepthMap.get(linkId) ?? 0;
-        const delay = depth * WAVE_DELAY + 100;
-        const localElapsed = elapsedSinceStart - delay;
-
-        if (localElapsed >= 0 && localElapsed < linkFadeDuration) {
-          isAnyAnimating = true;
-          const progress = localElapsed / linkFadeDuration;
-          const eased = easeOutCubic(progress);
-
-          let linkGroup = linkObjMap.get(linkId);
-          if (!linkGroup) {
-            const edge = links.find((e: any) => {
-              const s = typeof e.source === 'object' ? e.source.id : e.source;
-              const t = typeof e.target === 'object' ? e.target.id : e.target;
-              return `${s}-${t}` === linkId || `${t}-${s}` === linkId;
-            });
-            const edgeObj = edge as any;
-            if (edgeObj?.__threeObj) {
-              linkGroup = edgeObj.__threeObj;
-              linkObjMap.set(linkId, linkGroup);
-            }
-          }
-
-          if (linkGroup) {
-            const pipeMesh = linkGroup.children?.find(
-              (c: any) => c.userData?.isPipe,
-            );
-            if (pipeMesh && pipeMesh.material && pipeMesh.material.uniforms) {
-              pipeMesh.material.uniforms.progress.value = eased * 0.7;
-            }
-          }
-        } else if (localElapsed >= linkFadeDuration) {
-          const linkGroup = linkObjMap.get(linkId);
-          if (linkGroup) {
-            const pipeMesh = linkGroup.children?.find(
-              (c: any) => c.userData?.isPipe,
-            );
-            if (pipeMesh && pipeMesh.material && pipeMesh.material.uniforms) {
-              pipeMesh.material.uniforms.progress.value = 0.7;
-            }
-          }
-        }
-      });
-
-      if (isAnyAnimating || elapsedSinceStart < totalDuration) {
-        requestAnimationFrame(animateFrame);
-      }
-    };
-
-    requestAnimationFrame(animateFrame);
   });
+}
+
+function highlightElements(
+  nodeIds: string[],
+  linkIds: string[],
+  options?: {
+    maxDepth?: number;
+    seedNodeIds?: string[];
+    graph?: IncomingGraphPayload;
+  },
+) {
+  currentAnimationId++;
+
+  const payloadGraph = normalizeIncomingGraphPayload(options?.graph);
+  focusedGraphData.value = payloadGraph;
+
+  const effectiveNodes = payloadGraph?.nodes ?? graphData.value.nodes;
+  const effectiveEdges = payloadGraph?.edges ?? graphData.value.edges;
+  const effectiveNodeSet = new Set(effectiveNodes.map((n) => String(n.id)));
+
+  const normalizedNodeSet = new Set(
+    nodeIds
+      .map((id) => String(id))
+      .filter((id) => Boolean(id) && effectiveNodeSet.has(id)),
+  );
+
+  if (normalizedNodeSet.size === 0 && effectiveNodes.length > 0) {
+    effectiveNodes.forEach((node) => normalizedNodeSet.add(String(node.id)));
+  }
+
+  const normalizedLinkSet = new Set(
+    linkIds.map((id) => String(id)).filter(Boolean),
+  );
+
+  const availableLinkKeys = new Set<string>();
+  effectiveEdges.forEach((edge: GraphEdge) => {
+    availableLinkKeys.add(`${edge.source}-${edge.target}`);
+    availableLinkKeys.add(`${edge.target}-${edge.source}`);
+    if (edge.id) {
+      availableLinkKeys.add(String(edge.id));
+    }
+  });
+
+  const matchedLinkSet = new Set(
+    Array.from(normalizedLinkSet).filter((id) => availableLinkKeys.has(id)),
+  );
+
+  if (matchedLinkSet.size === 0 && normalizedNodeSet.size > 1) {
+    effectiveEdges.forEach((edge: GraphEdge) => {
+      if (
+        normalizedNodeSet.has(String(edge.source)) &&
+        normalizedNodeSet.has(String(edge.target))
+      ) {
+        if (edge.id) {
+          matchedLinkSet.add(String(edge.id));
+        }
+        matchedLinkSet.add(`${edge.source}-${edge.target}`);
+      }
+    });
+  }
+
+  focusedNodeIds.value = normalizedNodeSet;
+  focusedLinkIds.value = matchedLinkSet;
+  focusedSeedNodeIds.value = new Set(
+    (options?.seedNodeIds ?? []).map((id) => String(id)).filter((id) =>
+      normalizedNodeSet.has(id),
+    ),
+  );
+
+  highlightedNodeIds.value.clear();
+  highlightedLinkIds.value.clear();
+
+  updateGraphData();
+  applyLinkStyles();
+  graphInstance?.d3ReheatSimulation?.();
+  scheduleFocusZoomToFit();
 }
 
 // 获取当前图谱节点列表（供父组件匹配用）

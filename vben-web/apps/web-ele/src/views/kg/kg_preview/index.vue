@@ -26,7 +26,11 @@ interface GraphExpose {
   highlightElements?: (
     nodeIds: string[],
     linkIds: string[],
-    options?: { maxDepth?: number; seedNodeIds?: string[] }
+    options?: {
+      maxDepth?: number;
+      seedNodeIds?: string[];
+      graph?: { nodes?: any[]; edges?: any[]; links?: any[] };
+    }
   ) => void;
 }
 
@@ -208,6 +212,36 @@ const handleKgHighlight = (payload: KgHighlightPayload) => {
   params.selectedCategory = '';
 
   const maxDepth = Number.isFinite(payload.maxDepth) ? Number(payload.maxDepth) : 3;
+  const hasPayloadGraph =
+    Array.isArray(payload.graph?.nodes) ||
+    Array.isArray(payload.graph?.edges) ||
+    Array.isArray((payload.graph as any)?.links);
+
+  if (hasPayloadGraph) {
+    const payloadNodeIds = Array.from(
+      new Set((payload.nodeIds || []).map(normalizeNodeId).filter(Boolean))
+    );
+    const payloadSeedIds = Array.from(
+      new Set((payload.seedNodeIds || []).map(normalizeNodeId).filter(Boolean))
+    );
+    const payloadLinkIds = Array.from(
+      new Set((payload.linkIds || []).map(normalizeLinkId).filter(Boolean))
+    );
+
+    const finalSeedIds = payloadSeedIds.length
+      ? payloadSeedIds
+      : payloadNodeIds.length
+        ? [payloadNodeIds[0]!]
+        : [];
+
+    graphRef.value.highlightElements?.(payloadNodeIds, payloadLinkIds, {
+      seedNodeIds: finalSeedIds,
+      maxDepth,
+      graph: payload.graph,
+    });
+    return;
+  }
+
   const nodes = graphRef.value.getNodes?.() ?? [];
   const edges = graphRef.value.getEdges?.() ?? [];
   const existingNodeIdSet = new Set(nodes.map((node) => normalizeNodeId(node.id)));

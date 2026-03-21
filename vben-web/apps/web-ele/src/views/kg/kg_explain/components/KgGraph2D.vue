@@ -501,9 +501,9 @@ function initGraph() {
 
     // 这里调整大小
   try {
-    graph.d3Force('charge')?.strength?.(-240);
-    graph.d3Force('link')?.distance?.(140);
-    graph.d3VelocityDecay?.(0.25);
+    graph.d3Force('charge')?.strength?.(-340);
+    graph.d3Force('link')?.distance?.(180);
+    graph.d3VelocityDecay?.(0.2);
   } catch {}
 
   updateSize();

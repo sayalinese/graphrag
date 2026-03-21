@@ -1,101 +1,119 @@
-// 简化的本地 mock 菜单 API
+import type { MenuRecordRaw, RouteRecordStringComponent } from '@vben/types';
+
 import { ref } from 'vue';
+
+import { requestClient } from '#/api/request';
 
 export interface MenuItem {
   id: number;
   pid?: number;
   type: 'button' | 'catalog' | 'embedded' | 'link' | 'menu';
-  title: string; // 直接用显示标题或 i18n 键
+  title: string;
+  name?: string;
   path?: string;
+  component?: string;
   icon?: string;
+  redirect?: string;
   status: 0 | 1;
   children?: MenuItem[];
 }
 
-const _menus = ref<MenuItem[]>([
-  {
-    id: 1,
-    type: 'catalog',
-    title: 'system.menu.manager',
-    status: 1,
-    children: [
-      {
-        id: 11,
-        pid: 1,
-        type: 'menu',
-        title: 'system.role.list',
-        path: '/system/role',
-        status: 1,
-      },
-      {
-        id: 12,
-        pid: 1,
-        type: 'menu',
-        title: 'system.menu.name',
-        path: '/system/menu',
-        status: 1,
-      },
-    ],
-  },
-]);
+const _menus = ref<MenuItem[]>([]);
 
-let idSeed = 1000;
+function cloneMenus() {
+  return structuredClone(_menus.value);
+}
+
+
+function toMenuRecords(
+  list: MenuItem[],
+  inheritedHidden = false,
+): MenuRecordRaw[] {
+  return list
+    .filter((item) => item.type !== 'button')
+    .map((item) => {
+      const hidden = inheritedHidden || item.status === 0;
+      const route: MenuRecordRaw = {
+        name: item.name || item.path || `${item.id}`,
+        path: item.path || '',
+        icon: item.icon,
+        show: !hidden,
+      };
+
+      if (item.children?.length) {
+        route.children = toMenuRecords(item.children, hidden);
+      }
+      return route;
+    });
+}
+
+function filterVisibleMenuRecords(list: MenuRecordRaw[]): MenuRecordRaw[] {
+  return list
+    .filter((item) => item.show !== false)
+    .map((item) => ({
+      ...item,
+      children: item.children ? filterVisibleMenuRecords(item.children) : undefined,
+    }));
+}
+
+export async function getMenuRoutes() {
+  return (await requestClient.get('/menu/all')) as RouteRecordStringComponent[];
+}
+
+export async function getMenuRecords() {
+  if (_menus.value.length === 0) {
+    await listMenusInternal();
+  }
+  return filterVisibleMenuRecords(toMenuRecords(cloneMenus()));
+}
+
+function normalizeTree(list: MenuItem[]): MenuItem[] {
+  return list.map((item) => ({
+    ...item,
+    children: item.children ? normalizeTree(item.children) : undefined,
+  }));
+}
+
+async function listMenusInternal() {
+  const res: any = await requestClient.get('/system/menu/list');
+  const menus = res?.menus || res?.data?.menus || [];
+  _menus.value = normalizeTree(menus);
+  return _menus.value;
+}
 
 export function useMenuApi() {
   function listMenus() {
-    return Promise.resolve(structuredClone(_menus.value));
+    return listMenusInternal();
   }
-  function createMenu(data: Omit<MenuItem, 'id'>) {
-    const item: MenuItem = { ...data, id: ++idSeed };
-    if (item.pid) {
-      const parent = findNode(item.pid, _menus.value);
-      if (parent) {
-        parent.children = parent.children || [];
-        parent.children.push(item);
-      }
-    } else {
-      _menus.value.push(item);
-    }
-    return Promise.resolve(item);
+  async function createMenu(data: Omit<MenuItem, 'id'>) {
+    const res: any = await requestClient.post('/system/menu/create', data);
+    const item = res?.menu || res?.data?.menu || null;
+    await listMenusInternal();
+    return item as MenuItem | null;
   }
-  function updateMenu(id: number, data: Partial<Omit<MenuItem, 'id'>>) {
-    const node = findNode(id, _menus.value);
-    if (node) {
-      Object.assign(node, data);
-    }
-    return Promise.resolve(node);
+  async function updateMenu(id: number, data: Partial<Omit<MenuItem, 'id'>>) {
+    const res: any = await requestClient.request(`/system/menu/${id}`, {
+      method: 'PUT',
+      data,
+    });
+    const item = res?.menu || res?.data?.menu || null;
+    await listMenusInternal();
+    return item as MenuItem | null;
   }
-  function deleteMenu(id: number) {
-    removeNode(id, _menus.value);
-    return Promise.resolve(true);
+  async function deleteMenu(id: number) {
+    await requestClient.request(`/system/menu/${id}`, { method: 'DELETE' });
+    await listMenusInternal();
+    return true;
   }
-  function toggleMenuStatus(id: number) {
-    const node = findNode(id, _menus.value);
-    if (node) node.status = node.status === 1 ? 0 : 1;
-    return Promise.resolve(node);
+  async function toggleMenuStatus(id: number) {
+    const res: any = await requestClient.request(`/system/menu/${id}/toggle`, {
+      method: 'POST',
+    });
+    const item = res?.menu || res?.data?.menu || null;
+    await listMenusInternal();
+    return item as MenuItem | null;
   }
 
-  function findNode(id: number, list: MenuItem[]): MenuItem | null {
-    for (const item of list) {
-      if (item.id === id) return item;
-      if (item.children) {
-        const found = findNode(id, item.children);
-        if (found) return found;
-      }
-    }
-    return null;
-  }
-  function removeNode(id: number, list: MenuItem[]): boolean {
-    const idx = list.findIndex((i) => i.id === id);
-    if (idx !== -1) {
-      list.splice(idx, 1);
-      return true;
-    }
-    for (const item of list) {
-      if (item.children && removeNode(id, item.children)) return true;
-    }
-    return false;
-  }
   return {
     listMenus,
     createMenu,

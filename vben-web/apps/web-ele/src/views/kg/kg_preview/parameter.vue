@@ -13,7 +13,7 @@ import {
   Fold,
   Document
 } from '@element-plus/icons-vue'
-import { baseRequestClient } from '#/api/request'
+import { getNeo4jDatabases } from './utils/api'
 
 interface ParamState {
   searchKeyword: string
@@ -72,26 +72,30 @@ const databaseOptions = ref<Array<{ label: string; value: string }>>([
 ])
 const loadingDocs = ref(false)
 
+function sanitizeDatabaseName(value?: string) {
+  const normalized = value?.trim() || ''
+  return normalized.toLowerCase() === 'system' ? '' : normalized
+}
+
+function ensureSelectedDatabaseValid() {
+  const selected = sanitizeDatabaseName(localState.value.selectedDatabase)
+  const allowed = new Set(databaseOptions.value.map((option) => option.value))
+  localState.value.selectedDatabase = allowed.has(selected) ? selected : ''
+}
+
 // 获取数据库列表
 async function fetchDatabases() {
   loadingDocs.value = true
   try {
-    const response = await baseRequestClient.get<any>('/kg/databases')
-    // baseRequestClient 返回原始 axios 响应，数据在 response.data 中
-    const result = response.data as any
-    console.log('数据库列表响应:', result)
-    if (result?.success && Array.isArray(result.data?.databases)) {
-      databaseOptions.value = [
-        { label: '默认数据库', value: '' },
-        ...result.data.databases.map((db: any) => ({
-          label: db.name || db,
-          value: db.name || db
-        }))
-      ]
-      console.log('数据库选项:', databaseOptions.value)
-    } else {
-      console.warn('数据库列表响应格式不正确:', result)
-    }
+    const databases = await getNeo4jDatabases()
+    databaseOptions.value = [
+      { label: '默认数据库', value: '' },
+      ...databases.map((db) => ({
+        label: db.name,
+        value: db.name
+      }))
+    ]
+    ensureSelectedDatabaseValid()
   } catch (error) {
     console.warn('获取数据库列表失败:', error)
   } finally {
@@ -100,12 +104,23 @@ async function fetchDatabases() {
 }
 
 watch(() => props.modelValue, (newVal) => {
-  localState.value = { ...newVal }
+  localState.value = {
+    ...newVal,
+    selectedDatabase: sanitizeDatabaseName(newVal.selectedDatabase)
+  }
+  ensureSelectedDatabaseValid()
 }, { deep: true })
 
 watch(localState, (newVal) => {
   emit('update:modelValue', { ...newVal })
 }, { deep: true })
+
+watch(() => localState.value.selectedDatabase, (newVal) => {
+  const sanitized = sanitizeDatabaseName(newVal)
+  if (sanitized !== newVal) {
+    localState.value.selectedDatabase = sanitized
+  }
+})
 
 const handleRefresh = () => {
   loading.value = true

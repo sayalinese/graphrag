@@ -1,14 +1,36 @@
 <script lang="ts" setup>
 import type { EchartsUIType } from '@vben/plugins/echarts';
 
-import { onMounted, ref } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 
 import { EchartsUI, useEcharts } from '@vben/plugins/echarts';
+
+const props = withDefaults(
+  defineProps<{
+    items?: Array<{ name: string; value: number }>;
+  }>(),
+  {
+    items: () => [],
+  },
+);
 
 const chartRef = ref<EchartsUIType>();
 const { renderEcharts } = useEcharts(chartRef);
 
-onMounted(() => {
+const labels = computed(() => {
+  return props.items.length > 0
+    ? props.items.map((item) => item.name)
+    : Array.from({ length: 6 }).map((_item, index) => `节点${index + 1}`);
+});
+
+const values = computed(() => {
+  return props.items.length > 0
+    ? props.items.map((item) => item.value ?? 0)
+    : Array.from({ length: 6 }).map(() => 0);
+});
+
+function renderChart() {
+  if (!chartRef.value) return;
   renderEcharts({
     grid: {
       bottom: 0,
@@ -20,11 +42,7 @@ onMounted(() => {
     series: [
       {
         barMaxWidth: 80,
-        // color: '#4f69fd',
-        data: [
-          3000, 2000, 3333, 5000, 3200, 4200, 3200, 2100, 3000, 5100, 6000,
-          3200, 4800,
-        ],
+        data: values.value,
         type: 'bar',
       },
     ],
@@ -38,15 +56,22 @@ onMounted(() => {
       trigger: 'axis',
     },
     xAxis: {
-      data: Array.from({ length: 12 }).map((_item, index) => `${index + 1}月`),
+      data: labels.value,
       type: 'category',
     },
     yAxis: {
-      max: 8000,
       splitNumber: 4,
       type: 'value',
     },
   });
+}
+
+onMounted(() => {
+  renderChart();
+});
+
+watch([labels, values], () => {
+  renderChart();
 });
 </script>
 

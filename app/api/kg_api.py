@@ -1,13 +1,14 @@
 import logging
 from typing import Any, Dict, List, Optional
 from datetime import datetime, date, timezone
+from collections import defaultdict
 import os
 import re
 import uuid
 from flask import Blueprint, request, jsonify, current_app
 from app.services.rag_service import RAGService
 from app.services.neo.mapping_manager import MappingManager
-from app.models import ChatSession, ChatMessage, Document, DocumentChunk
+from app.models import ChatSession, ChatMessage, Document, DocumentChunk, KnowledgeBase, User, UserSession
 from app.extensions import db
 from sqlalchemy import text
 
@@ -38,6 +39,22 @@ def _vector_collection_for_database(db_name: Optional[str]) -> str:
         return base
     safe = re.sub(r'[^0-9a-zA-Z_]+', '_', db.lower()).strip('_') or 'default'
     return f"{base}__{safe}"
+
+
+def _normalize_graph_database(db_name: Optional[str]) -> Optional[str]:
+    normalized = (db_name or '').strip()
+    if not normalized:
+        return None
+    if normalized.lower() == 'system':
+        raise ValueError('system 数据库不支持图谱查询')
+    return normalized
+
+
+def _require_graph_database(db_name: Optional[str]) -> str:
+    normalized = _normalize_graph_database(db_name)
+    if not normalized:
+        raise ValueError('database is required')
+    return normalized
 
 
 def _count_vectors_for_database(db_name: Optional[str]) -> int:
@@ -167,6 +184,77 @@ def serialize_neo4j_object(obj):
         return str(obj)
 
 
+def _coerce_utc_datetime(value: Any) -> Optional[datetime]:
+    if not isinstance(value, datetime):
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _build_daily_series(rows: List[Any], days: int) -> Dict[str, List[Any]]:
+    today = datetime.now(timezone.utc).date()
+    start_date = today.replace() if days <= 1 else today
+    dates = [today]
+    if days > 1:
+        dates = [today.fromordinal(today.toordinal() - offset) for offset in range(days - 1, -1, -1)]
+
+    counts = defaultdict(int)
+    for raw_value in rows:
+        dt_value = _coerce_utc_datetime(raw_value)
+        if not dt_value:
+            continue
+        bucket = dt_value.date()
+        if bucket < dates[0] or bucket > dates[-1]:
+            continue
+        counts[bucket] += 1
+
+    return {
+        "labels": [item.isoformat() for item in dates],
+        "values": [int(counts.get(item, 0)) for item in dates],
+    }
+
+
+def _build_monthly_series(rows: List[Any], months: int) -> Dict[str, List[Any]]:
+    current = datetime.now(timezone.utc)
+    month_keys: List[tuple[int, int]] = []
+    year = current.year
+    month = current.month
+    for _ in range(months):
+        month_keys.append((year, month))
+        month -= 1
+        if month == 0:
+            month = 12
+            year -= 1
+    month_keys.reverse()
+
+    counts = defaultdict(int)
+    for raw_value in rows:
+        dt_value = _coerce_utc_datetime(raw_value)
+        if not dt_value:
+            continue
+        bucket = (dt_value.year, dt_value.month)
+        if bucket not in month_keys:
+            continue
+        counts[bucket] += 1
+
+    return {
+        "labels": [f"{year}-{month:02d}" for year, month in month_keys],
+        "values": [int(counts.get(key, 0)) for key in month_keys],
+    }
+
+
+def _load_time_values(model, column_attr, start_dt: Optional[datetime] = None) -> List[datetime]:
+    try:
+        query = db.session.query(column_attr).filter(column_attr.isnot(None))
+        if start_dt is not None:
+            query = query.filter(column_attr >= start_dt)
+        return [row[0] for row in query.all() if row and row[0] is not None]
+    except Exception as exc:
+        logger.warning(f"加载时序数据失败 {model.__name__}: {exc}")
+        return []
+
+
 
 
 @kg_bp.route('/stats', methods=['GET'])
@@ -174,7 +262,10 @@ def get_graph_stats():
     """获取图谱统计信息"""
     try:
         rag_service = get_rag_service()
-        database = request.args.get('database', None, type=str)
+        try:
+            database = _normalize_graph_database(request.args.get('database', None, type=str))
+        except ValueError as exc:
+            return jsonify({"success": False, "error": str(exc)}), 400
 
         graph_service = rag_service.graph_service
 
@@ -231,10 +322,14 @@ def get_overview():
     """获取图谱概览"""
     try:
         rag_service = get_rag_service()
-        stats = rag_service.get_graph_stats()
+        try:
+            database = _normalize_graph_database(request.args.get('database', None, type=str))
+        except ValueError as exc:
+            return jsonify({"success": False, "error": str(exc)}), 400
+        stats = rag_service.get_graph_stats(database=database)
         
         # 获取中心节点
-        central_nodes = rag_service.kg_query.get_central_nodes(limit=5)
+        central_nodes = rag_service.kg_query.get_central_nodes(limit=5, database=database)
 
         serialized_nodes: List[Dict[str, Any]] = []
         for item in central_nodes:
@@ -245,12 +340,90 @@ def get_overview():
         overview = {
             "stats": stats,
             "central_nodes": serialized_nodes,
-            "timestamp": __import__('datetime').datetime.now().isoformat()
+            "timestamp": __import__('datetime').datetime.now().isoformat(),
+            "database": database or "default",
         }
         
         return jsonify({"success": True, "data": overview})
     except Exception as e:
         logger.error(f"获取概览失败: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@kg_bp.route('/dashboard', methods=['GET'])
+def get_dashboard():
+    """获取工作台/分析页专用聚合数据"""
+    try:
+        rag_service = get_rag_service()
+        try:
+            database = _normalize_graph_database(request.args.get('database', None, type=str))
+        except ValueError as exc:
+            return jsonify({"success": False, "error": str(exc)}), 400
+        stats = rag_service.get_graph_stats(database=database) or {}
+        central_nodes = rag_service.kg_query.get_central_nodes(limit=6, database=database) or []
+
+        serialized_nodes: List[Dict[str, Any]] = []
+        for item in central_nodes:
+            serialized = serialize_node_record(item)
+            if serialized:
+                serialized_nodes.append(serialized)
+
+        now = datetime.now(timezone.utc)
+        recent_days = 14
+        recent_months = 12
+        start_daily = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        start_daily = start_daily.replace(day=start_daily.day)  # keep explicit day boundary
+        start_daily = datetime.fromordinal(start_daily.date().toordinal() - (recent_days - 1)).replace(
+            hour=0,
+            minute=0,
+            second=0,
+            microsecond=0,
+            tzinfo=timezone.utc,
+        )
+
+        document_times = _load_time_values(Document, Document.created_at, start_daily)
+        chunk_times = _load_time_values(DocumentChunk, DocumentChunk.created_at, start_daily)
+        message_times = _load_time_values(ChatMessage, ChatMessage.timestamp, start_daily)
+        session_times = _load_time_values(ChatSession, ChatSession.created_at, start_daily)
+        kb_times = _load_time_values(KnowledgeBase, KnowledgeBase.created_at, start_daily)
+        user_times = _load_time_values(User, User.created_at, start_daily)
+        login_times = _load_time_values(UserSession, UserSession.created_at, start_daily)
+
+        monthly_start_year = now.year
+        monthly_start_month = now.month - (recent_months - 1)
+        while monthly_start_month <= 0:
+            monthly_start_month += 12
+            monthly_start_year -= 1
+        start_monthly = datetime(monthly_start_year, monthly_start_month, 1, tzinfo=timezone.utc)
+
+        monthly_document_times = _load_time_values(Document, Document.created_at, start_monthly)
+        monthly_message_times = _load_time_values(ChatMessage, ChatMessage.timestamp, start_monthly)
+
+        payload = {
+            "stats": stats,
+            "central_nodes": serialized_nodes,
+            "database": database or "default",
+            "timestamp": now.isoformat(),
+            "trends": {
+                "daily": {
+                    "documents": _build_daily_series(document_times, recent_days),
+                    "chunks": _build_daily_series(chunk_times, recent_days),
+                    "messages": _build_daily_series(message_times, recent_days),
+                    "sessions": _build_daily_series(session_times, recent_days),
+                    "knowledge_bases": _build_daily_series(kb_times, recent_days),
+                    "users": _build_daily_series(user_times, recent_days),
+                    "logins": _build_daily_series(login_times, recent_days),
+                },
+                "monthly": {
+                    "documents": _build_monthly_series(monthly_document_times, recent_months),
+                    "messages": _build_monthly_series(monthly_message_times, recent_months),
+                },
+            },
+        }
+
+        return jsonify({"success": True, "data": payload})
+    except Exception as e:
+        logger.error(f"获取 dashboard 数据失败: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
 
@@ -376,7 +549,10 @@ def list_documents():
     """
     try:
         rag_service = get_rag_service()
-        database = request.args.get('database', None, type=str)
+        try:
+            database = _normalize_graph_database(request.args.get('database', None, type=str))
+        except ValueError as exc:
+            return jsonify({"success": False, "error": str(exc)}), 400
         
         # 查询所有具有 doc_id 或 source 属性的唯一文档
         cypher = """
@@ -1208,7 +1384,10 @@ def upload_document():
         text = data.get('text', '')
         document_id = data.get('document_id', '')
         document_title = data.get('document_title', '')
-        database = data.get('database')
+        try:
+            database = _require_graph_database(data.get('database'))
+        except ValueError as exc:
+            return jsonify({"success": False, "error": str(exc)}), 400
         
         if not text:
             return jsonify({"success": False, "error": "文本不能为空"}), 400
@@ -1460,7 +1639,10 @@ def ingest():
         doc_id = data.get('doc_id') or data.get('document_id') or ''
         kb_id = data.get('kb_id')
         filename = data.get('filename')
-        database = data.get('database')
+        try:
+            database = _require_graph_database(data.get('database'))
+        except ValueError as exc:
+            return jsonify({"success": False, "error": str(exc)}), 400
 
         if not text:
             return jsonify({"success": False, "error": "text is required"}), 400
@@ -1518,7 +1700,10 @@ def get_visualize_data():
         limit = max(100, min(5000, requested_limit or 1000))
         doc_id = request.args.get('doc_id', None, type=str)
         community_id = request.args.get('community_id', None, type=int)
-        database = request.args.get('database', None, type=str)
+        try:
+            database = _normalize_graph_database(request.args.get('database', None, type=str))
+        except ValueError as exc:
+            return jsonify({"success": False, "error": str(exc)}), 400
         
         rag_service = get_rag_service()
         
@@ -1861,7 +2046,10 @@ def list_communities():
     """获取社区列表"""
     try:
         doc_id = request.args.get('doc_id')
-        database = request.args.get('database', None, type=str)
+        try:
+            database = _normalize_graph_database(request.args.get('database', None, type=str))
+        except ValueError as exc:
+            return jsonify({"success": False, "error": str(exc)}), 400
         rag_service = get_rag_service()
         
         if doc_id:
@@ -2109,13 +2297,13 @@ def graphrag_local_search():
         top_k = int(data.get('top_k', 20))
         include_community = data.get('include_community', True)
         doc_id = data.get('doc_id')
-        database = (data.get('database') or '').strip()
+        try:
+            database = _require_graph_database(data.get('database'))
+        except ValueError as exc:
+            return jsonify({"success": False, "error": str(exc)}), 400
         
         if not question:
             return jsonify({"success": False, "error": "question is required"}), 400
-        if not database:
-            return jsonify({"success": False, "error": "database is required"}), 400
-        
         svc = get_graphrag_service()
         if not svc:
             return jsonify({"success": False, "error": "GraphRAG service unavailable"}), 500
@@ -2143,13 +2331,13 @@ def graphrag_global_search():
         max_communities = int(data.get('max_communities', 10))
         include_intermediate = data.get('include_intermediate', False)
         doc_id = data.get('doc_id')
-        database = (data.get('database') or '').strip()
+        try:
+            database = _require_graph_database(data.get('database'))
+        except ValueError as exc:
+            return jsonify({"success": False, "error": str(exc)}), 400
         
         if not question:
             return jsonify({"success": False, "error": "question is required"}), 400
-        if not database:
-            return jsonify({"success": False, "error": "database is required"}), 400
-        
         svc = get_graphrag_service()
         if not svc:
             return jsonify({"success": False, "error": "GraphRAG service unavailable"}), 500
@@ -2189,13 +2377,13 @@ def graphrag_hybrid_search():
         chat_history = data.get('chat_history', [])  # 对话历史
         session_id = data.get('session_id') # 可选：会话 ID，用于持久化
         doc_id = data.get('doc_id')  # 可选：文档 ID，用于限定检索范围
-        database = (data.get('database') or '').strip()  # 必填：Neo4j database
+        try:
+            database = _require_graph_database(data.get('database'))  # 必填：Neo4j database
+        except ValueError as exc:
+            return jsonify({"success": False, "error": str(exc)}), 400
         
         if not question:
             return jsonify({"success": False, "error": "question is required"}), 400
-        if not database:
-            return jsonify({"success": False, "error": "database is required"}), 400
-        
         if strategy not in ('auto', 'local', 'global', 'both'):
             return jsonify({"success": False, "error": "invalid strategy, must be: auto, local, global, both"}), 400
         
@@ -2276,9 +2464,10 @@ def graphrag_detect_communities():
     try:
         data = request.json or {}
         write_property = data.get('write_property', True)
-        database = (data.get('database') or '').strip()
-        if not database:
-            return jsonify({"success": False, "error": "database is required"}), 400
+        try:
+            database = _require_graph_database(data.get('database'))
+        except ValueError as exc:
+            return jsonify({"success": False, "error": str(exc)}), 400
         
         svc = get_graphrag_service()
         if not svc:
@@ -2308,9 +2497,10 @@ def graphrag_generate_reports():
     """生成所有社区的 LLM 摘要报告"""
     try:
         data = request.json or {}
-        database = (data.get('database') or '').strip()
-        if not database:
-            return jsonify({"success": False, "error": "database is required"}), 400
+        try:
+            database = _require_graph_database(data.get('database'))
+        except ValueError as exc:
+            return jsonify({"success": False, "error": str(exc)}), 400
         svc = get_graphrag_service()
         if not svc:
             return jsonify({"success": False, "error": "GraphRAG service unavailable"}), 500
@@ -2336,9 +2526,10 @@ def graphrag_generate_reports():
 def get_community_details(community_id: int):
     """获取指定社区的详细信息"""
     try:
-        database = (request.args.get('database') or '').strip()
-        if not database:
-            return jsonify({"success": False, "error": "database is required"}), 400
+        try:
+            database = _require_graph_database(request.args.get('database'))
+        except ValueError as exc:
+            return jsonify({"success": False, "error": str(exc)}), 400
 
         svc = get_graphrag_service()
         if not svc:
@@ -2440,7 +2631,10 @@ def cleanup_orphaned_chunks():
 def get_chunks_vector_status():
     """获取Chunk与向量的关联状态"""
     try:
-        database = (request.args.get('database') or '').strip() or None
+        try:
+            database = _normalize_graph_database(request.args.get('database'))
+        except ValueError as exc:
+            return jsonify({"success": False, "error": str(exc)}), 400
 
         svc = getattr(current_app, 'graphrag_service', None) or get_rag_service()
         if not svc:

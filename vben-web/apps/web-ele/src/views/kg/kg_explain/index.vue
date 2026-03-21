@@ -54,7 +54,7 @@ function handleKgHighlight(payload: HighlightPayload) {
         class="min-h-[320px] border-b border-[#16345d] lg:min-h-0 lg:border-b-0 lg:border-r"
       >
         <KgChatWindow
-          v-model:doc-id="selectedDocId"
+          v-model:selected-database="selectedDocId"
           @kg-highlight="handleKgHighlight"
           @close="goBack"
         />

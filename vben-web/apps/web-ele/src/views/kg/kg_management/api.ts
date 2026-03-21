@@ -1,7 +1,24 @@
 import { baseRequestClient } from '#/api/request';
 
 export async function getDatabases() {
-  return baseRequestClient.get('/kg/databases');
+  const response = await baseRequestClient.get('/kg/databases');
+  const payload = response.data || response;
+  const databases = payload.data?.databases || payload.databases || [];
+
+  if (Array.isArray(databases)) {
+    const filtered = databases.filter((db: any) => {
+      const name = String(db?.name || db || '').trim().toLowerCase();
+      return Boolean(name) && name !== 'system';
+    });
+
+    if (payload.data?.databases) {
+      payload.data.databases = filtered;
+    } else {
+      payload.databases = filtered;
+    }
+  }
+
+  return response;
 }
 
 export async function getCommunities(docId?: string, database?: string) {

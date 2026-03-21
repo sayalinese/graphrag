@@ -1,14 +1,34 @@
 <script lang="ts" setup>
 import type { EchartsUIType } from '@vben/plugins/echarts';
 
-import { onMounted, ref } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 
 import { EchartsUI, useEcharts } from '@vben/plugins/echarts';
+
+const props = withDefaults(
+  defineProps<{
+    items?: Array<{ name: string; value: number }>;
+  }>(),
+  {
+    items: () => [],
+  },
+);
 
 const chartRef = ref<EchartsUIType>();
 const { renderEcharts } = useEcharts(chartRef);
 
-onMounted(() => {
+const pieItems = computed(() => {
+  if (props.items.length > 0) {
+    return props.items;
+  }
+  return Array.from({ length: 4 }).map((_item, index) => ({
+    name: `来源${index + 1}`,
+    value: 0,
+  }));
+});
+
+function renderChart() {
+  if (!chartRef.value) return;
   renderEcharts({
     legend: {
       bottom: '2%',
@@ -23,12 +43,7 @@ onMounted(() => {
         animationType: 'scale',
         avoidLabelOverlap: false,
         color: ['#5ab1ef', '#b6a2de', '#67e0e3', '#2ec7c9'],
-        data: [
-          { name: '搜索引擎', value: 1048 },
-          { name: '直接访问', value: 735 },
-          { name: '邮件营销', value: 580 },
-          { name: '联盟广告', value: 484 },
-        ],
+        data: pieItems.value,
         emphasis: {
           label: {
             fontSize: '12',
@@ -48,7 +63,7 @@ onMounted(() => {
         labelLine: {
           show: false,
         },
-        name: '访问来源',
+        name: '节点类型占比',
         radius: ['40%', '65%'],
         type: 'pie',
       },
@@ -57,6 +72,14 @@ onMounted(() => {
       trigger: 'item',
     },
   });
+}
+
+onMounted(() => {
+  renderChart();
+});
+
+watch(pieItems, () => {
+  renderChart();
 });
 </script>
 

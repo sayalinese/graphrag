@@ -1,14 +1,34 @@
 <script lang="ts" setup>
 import type { EchartsUIType } from '@vben/plugins/echarts';
 
-import { onMounted, ref } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 
 import { EchartsUI, useEcharts } from '@vben/plugins/echarts';
+
+const props = withDefaults(
+  defineProps<{
+    items?: Array<{ name: string; value: number }>;
+  }>(),
+  {
+    items: () => [],
+  },
+);
 
 const chartRef = ref<EchartsUIType>();
 const { renderEcharts } = useEcharts(chartRef);
 
-onMounted(() => {
+const roseItems = computed(() => {
+  if (props.items.length > 0) {
+    return [...props.items].sort((a, b) => a.value - b.value);
+  }
+  return Array.from({ length: 4 }).map((_item, index) => ({
+    name: `类型${index + 1}`,
+    value: 0,
+  }));
+});
+
+function renderChart() {
+  if (!chartRef.value) return;
   renderEcharts({
     series: [
       {
@@ -19,15 +39,8 @@ onMounted(() => {
         animationType: 'scale',
         center: ['50%', '50%'],
         color: ['#5ab1ef', '#b6a2de', '#67e0e3', '#2ec7c9'],
-        data: [
-          { name: '外包', value: 500 },
-          { name: '定制', value: 310 },
-          { name: '技术支持', value: 274 },
-          { name: '远程', value: 400 },
-        ].sort((a, b) => {
-          return a.value - b.value;
-        }),
-        name: '商业占比',
+        data: roseItems.value,
+        name: '关系类型',
         radius: '80%',
         roseType: 'radius',
         type: 'pie',
@@ -38,6 +51,14 @@ onMounted(() => {
       trigger: 'item',
     },
   });
+}
+
+onMounted(() => {
+  renderChart();
+});
+
+watch(roseItems, () => {
+  renderChart();
 });
 </script>
 

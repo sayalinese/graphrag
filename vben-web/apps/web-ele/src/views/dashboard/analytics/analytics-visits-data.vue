@@ -1,42 +1,49 @@
 <script lang="ts" setup>
 import type { EchartsUIType } from '@vben/plugins/echarts';
 
-import { onMounted, ref } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 
 import { EchartsUI, useEcharts } from '@vben/plugins/echarts';
+
+const props = withDefaults(
+  defineProps<{
+    items?: Array<{ name: string; value: number }>;
+  }>(),
+  {
+    items: () => [],
+  },
+);
 
 const chartRef = ref<EchartsUIType>();
 const { renderEcharts } = useEcharts(chartRef);
 
-onMounted(() => {
+const radarItems = computed(() => {
+  if (props.items.length > 0) {
+    return props.items.slice(0, 6);
+  }
+  return Array.from({ length: 6 }).map((_item, index) => ({
+    name: `类型${index + 1}`,
+    value: 0,
+  }));
+});
+
+const radarIndicators = computed(() => {
+  return radarItems.value.map((item) => ({ name: item.name, max: Math.max(item.value, 1) }));
+});
+
+const radarValues = computed(() => radarItems.value.map((item) => item.value ?? 0));
+
+function renderChart() {
+  if (!chartRef.value) return;
   renderEcharts({
     legend: {
       bottom: 0,
-      data: ['访问', '趋势'],
+      data: ['节点类型'],
     },
     radar: {
-      indicator: [
-        {
-          name: '网页',
-        },
-        {
-          name: '移动端',
-        },
-        {
-          name: 'Ipad',
-        },
-        {
-          name: '客户端',
-        },
-        {
-          name: '第三方',
-        },
-        {
-          name: '其它',
-        },
-      ],
+      indicator: radarIndicators.value,
       radius: '60%',
-      splitNumber: 8,
+      splitNumber: 4,
     },
     series: [
       {
@@ -52,15 +59,8 @@ onMounted(() => {
             itemStyle: {
               color: '#b6a2de',
             },
-            name: '访问',
-            value: [90, 50, 86, 40, 50, 20],
-          },
-          {
-            itemStyle: {
-              color: '#5ab1ef',
-            },
-            name: '趋势',
-            value: [70, 75, 70, 76, 20, 85],
+            name: '节点类型',
+            value: radarValues.value,
           },
         ],
         itemStyle: {
@@ -74,6 +74,14 @@ onMounted(() => {
     ],
     tooltip: {},
   });
+}
+
+onMounted(() => {
+  renderChart();
+});
+
+watch([radarIndicators, radarValues], () => {
+  renderChart();
 });
 </script>
 

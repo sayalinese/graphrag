@@ -112,13 +112,18 @@ const fetchDatabases = async () => {
     const res = await baseRequestClient.get<any>('/kg/databases');
     const result = res.data as any;
     if (result?.success && Array.isArray(result.data?.databases)) {
-      databaseOptions.value = result.data.databases.map((db: any) => ({
+      const availableDatabases = result.data.databases.filter((db: any) => {
+        const name = String(db?.name || db || '').trim().toLowerCase();
+        return Boolean(name) && name !== 'system';
+      });
+
+      databaseOptions.value = availableDatabases.map((db: any) => ({
           label: db.name || db,
           value: db.name || db,
         }));
 
       if (!selectedDatabase.value && databaseOptions.value.length > 0) {
-        const defaultDb = result.data.databases.find((db: any) => Boolean(db?.default));
+        const defaultDb = availableDatabases.find((db: any) => Boolean(db?.default));
         selectedDatabase.value = (defaultDb?.name || defaultDb) || databaseOptions.value[0].value;
       }
     }

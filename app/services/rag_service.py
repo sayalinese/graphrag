@@ -121,13 +121,13 @@ class RAGService:
             logger.error(f"知识图谱构建失败: {e}")
             return {"success": False, "error": str(e)}
     
-    def get_graph_stats(self) -> Dict[str, Any]:
+    def get_graph_stats(self, database: Optional[str] = None) -> Dict[str, Any]:
         """获取图谱统计信息"""
         if self.mode != "graphrag":
             return {"error": "此功能仅在 GraphRAG 模式下可用"}
         
         try:
-            return self.kg_query.get_graph_stats()
+            return self.kg_query.get_graph_stats(database=database)
         except Exception as e:
             logger.error(f"获取图谱统计失败: {e}")
             return {"error": str(e)}

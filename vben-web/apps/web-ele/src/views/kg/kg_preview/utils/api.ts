@@ -278,12 +278,16 @@ export async function globalSearch(
 /**
  * 閼惧嘲褰囬崶鎹愭皑缂佺喕顓告穱鈩冧紖
  */
-export async function getGraphStats(): Promise<{
+export async function getGraphStats(database?: string): Promise<{
   nodes: number;
   edges: number;
   communities?: number;
 }> {
-  const axiosResponse = await baseRequestClient.get<ApiResponse<any>>('/kg/stats');
+  const params =
+    database && database.trim() && database.trim().toLowerCase() !== 'system'
+      ? { database: database.trim() }
+      : undefined;
+  const axiosResponse = await baseRequestClient.get<ApiResponse<any>>('/kg/stats', { params });
   const response = axiosResponse.data as unknown as ApiResponse<any>;
   if (!response.success) {
     throw new Error(response.error || '閼惧嘲褰囩紒鐔活吀娣団剝浼呮径杈Е');
@@ -584,6 +588,9 @@ export async function getNeo4jDatabases(): Promise<Neo4jDatabaseInfo[]> {
   if (!response.success) {
     throw new Error(response.error || '获取 Neo4j 数据库列表失败');
   }
-  return response.data?.databases || [];
+  return (response.data?.databases || []).filter((database) => {
+    const name = database?.name?.trim().toLowerCase();
+    return Boolean(name) && name !== 'system';
+  });
 }
 

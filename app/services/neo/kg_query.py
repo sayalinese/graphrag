@@ -247,7 +247,7 @@ class KGQuery:
             logger.error(f"获取节点度数失败: {e}")
             return {"in_degree": 0, "out_degree": 0, "total_degree": 0}
     
-    def get_central_nodes(self, node_type: Optional[str] = None, limit: int = 10) -> List[Dict]:
+    def get_central_nodes(self, node_type: Optional[str] = None, limit: int = 10, database: Optional[str] = None) -> List[Dict]:
         """
         获取最中心的节点（按关系数量排序）
         
@@ -276,7 +276,7 @@ class KGQuery:
                 LIMIT $limit
                 """
             
-            results = self.graph_service.execute_query(cypher, {"limit": limit})
+            results = self.graph_service.execute_query(cypher, {"limit": limit}, database=database)
             return results
         except Exception as e:
             logger.error(f"获取中心节点失败: {e}")
@@ -341,7 +341,7 @@ class KGQuery:
             logger.error(f"社区检测失败: {e}")
             return []
     
-    def get_graph_stats(self) -> Dict[str, Any]:
+    def get_graph_stats(self, database: Optional[str] = None) -> Dict[str, Any]:
         """
         获取图谱统计信息
         
@@ -349,7 +349,13 @@ class KGQuery:
             统计数据
         """
         try:
-            stats = self.graph_service.get_graph_stats()
+            stats = self.graph_service.get_graph_stats(database=database)
+
+            cypher_communities = """
+            MATCH (n)
+            WHERE n.community_id IS NOT NULL
+            RETURN count(DISTINCT n.community_id) as communities
+            """
             
             # 获取节点类型统计
             cypher_labels = """
@@ -360,7 +366,11 @@ class KGQuery:
             ORDER BY count DESC
             """
             
-            label_stats = self.graph_service.execute_query(cypher_labels)
+            community_row = self.graph_service.execute_query_single(
+                cypher_communities,
+                database=database,
+            ) or {}
+            label_stats = self.graph_service.execute_query(cypher_labels, database=database)
             
             # 获取关系类型统计
             cypher_rels = """
@@ -369,10 +379,11 @@ class KGQuery:
             ORDER BY count DESC
             """
             
-            rel_stats = self.graph_service.execute_query(cypher_rels)
+            rel_stats = self.graph_service.execute_query(cypher_rels, database=database)
             
             return {
                 **stats,
+                "communities": int(community_row.get("communities", 0) or 0),
                 "node_types": {item.get("label"): item.get("count", 0) for item in label_stats},
                 "relation_types": {item.get("type"): item.get("count", 0) for item in rel_stats}
             }

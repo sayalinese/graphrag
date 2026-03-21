@@ -1,7 +1,10 @@
 <script setup lang="ts">
-import { ref, reactive, computed } from 'vue';
-import { router } from '#/router';
-import { $t } from '#/locales';
+import type { MenuItem } from '#/api/system/menu';
+
+import { computed, onMounted, reactive, ref } from 'vue';
+
+import { useAccessStore } from '@vben/stores';
+
 import {
   ElButton,
   ElDrawer,
@@ -19,129 +22,15 @@ import {
 } from 'element-plus';
 import { IconifyIcon } from '@vben/icons';
 
-interface MenuItem {
-  id: number;
-  pid?: number;
-  type: 'catalog' | 'menu' | 'button' | 'embedded' | 'link';
-  title: string; // 直接使用已经解析后的标题（简化）
-  path?: string;
-  icon?: string;
-  status: 0 | 1;
-  children?: MenuItem[];
-}
+import { getMenuRecords, useMenuApi } from '#/api/system/menu';
+import { $t } from '#/locales';
+import { router } from '#/router';
 
-let idSeed = 100;
-const menuTree = ref<MenuItem[]>([
-  {
-    id: 1,
-    type: 'catalog',
-    title: 'page.system.title',
-    icon: 'carbon:cloud-service-management',
-    status: 1,
-    children: [
-      {
-        id: 11,
-        pid: 1,
-        type: 'menu',
-        title: 'page.system.role.list',
-        path: '/system/role',
-        icon: 'carbon:user-role',
-        status: 1,
-      },
-      {
-        id: 12,
-        pid: 1,
-        type: 'menu',
-        title: 'page.system.menu.manager',
-        path: '/system/menu',
-        icon: 'carbon:menu',
-        status: 1,
-      },
-      {
-        id: 13,
-        pid: 1,
-        type: 'menu',
-        title: 'page.system.user.list',
-        path: '/system/user',
-        icon: 'carbon:user-avatar',
-        status: 1,
-      },
-    ],
-  },
-  {
-    id: 2,
-    type: 'catalog',
-    title: 'page.kg.title',
-    icon: 'lucide:network',
-    status: 1,
-    children: [
-      {
-        id: 21,
-        pid: 2,
-        type: 'menu',
-        title: 'page.kg.dashboard',
-        path: '/kg/dashboard',
-        icon: 'mdi:view-dashboard-outline',
-        status: 1,
-      },
-      {
-        id: 22,
-        pid: 2,
-        type: 'menu',
-        title: 'page.kg.construct',
-        path: '/kg/construct',
-        icon: 'mdi:database-plus-outline',
-        status: 1,
-      },
-      {
-        id: 23,
-        pid: 2,
-        type: 'menu',
-        title: 'page.kg.preview',
-        path: '/kg/preview',
-        icon: 'mdi:eye-outline',
-        status: 1,
-      },
-      {
-        id: 24,
-        pid: 2,
-        type: 'menu',
-        title: 'page.kg.management',
-        path: '/kg/management',
-        icon: 'mdi:cog-outline',
-        status: 1,
-      },
-    ],
-  },
-  {
-    id: 3,
-    type: 'catalog',
-    title: 'page.chat.title',
-    path: '/chat',
-    icon: 'lucide:message-square',
-    status: 1,
-    children: [
-      {
-        id: 31,
-        pid: 3,
-        type: 'menu',
-        title: 'page.chat.title',
-        path: '/chat/ai',
-        icon: 'lucide:bot-message-square',
-        status: 1,
-      },
-      {
-        id: 32,
-        pid: 3,
-        type: 'menu',
-        title: 'page.chat.management',
-        path: '/chat/management',
-        icon: 'lucide:settings-2',
-        status: 1,
-      },
-    ],
-  },
-]);
+const accessStore = useAccessStore();
+const { listMenus, createMenu, updateMenu, deleteMenu, toggleMenuStatus } =
+  useMenuApi();
+
+const menuTree = ref<MenuItem[]>([]);
 
 const drawerVisible = ref(false);
 const editing = ref<MenuItem | null>(null);
@@ -153,6 +42,14 @@ const formModel = reactive<MenuItem>({
   path: '',
   status: 1,
 });
+
+async function refreshMenuTree() {
+  menuTree.value = await listMenus();
+}
+
+async function refreshAccessMenus() {
+  accessStore.setAccessMenus(await getMenuRecords());
+}
 
 function openCreateRoot() {
   editing.value = null;
@@ -222,61 +119,34 @@ function submitForm() {
     ElMessage.error('路径必须以 / 开头');
     return;
   }
-  if (editing.value) {
-    const target = findNode(editing.value.id, menuTree.value);
-    if (target) {
-      Object.assign(target, { ...formModel });
-    }
-    ElMessage.success('更新成功');
-    // 同步路由隐藏状态（编辑可能修改路径或标题，这里仅按最新 status 与 path 应用）
-    if (target) syncRouteMenuStatus(target);
-  } else {
-    const newItem: MenuItem = { ...formModel, id: ++idSeed };
-    if (newItem.pid) {
-      const parent = findNode(newItem.pid, menuTree.value);
-      if (parent) {
-        parent.children = parent.children || [];
-        parent.children.push(newItem);
-      }
-    } else {
-      menuTree.value.push(newItem);
-    }
-    ElMessage.success('创建成功');
-    syncRouteMenuStatus(newItem);
-  }
-  drawerVisible.value = false;
-}
+  const payload = { ...formModel };
+  const action = editing.value
+    ? updateMenu(editing.value.id, payload)
+    : createMenu(payload as Omit<MenuItem, 'id'>);
 
-function findNode(id: number, list: MenuItem[]): MenuItem | null {
-  for (const item of list) {
-    if (item.id === id) return item;
-    if (item.children) {
-      const found = findNode(id, item.children);
-      if (found) return found;
-    }
-  }
-  return null;
+  action
+    .then(async (result) => {
+      const target = result || (editing.value ? { ...editing.value, ...payload } : null);
+      await refreshMenuTree();
+      if (target) syncRouteMenuStatus(target as MenuItem);
+      await refreshAccessMenus();
+      ElMessage.success(editing.value ? '更新成功' : '创建成功');
+      drawerVisible.value = false;
+    })
+    .catch(() => {
+      ElMessage.error(editing.value ? '更新失败' : '创建失败');
+    });
 }
 
 function deleteNode(node: MenuItem) {
   ElMessageBox.confirm(`确认删除: ${node.title} ?`, '提示', { type: 'warning' })
-    .then(() => {
-      removeNode(node.id, menuTree.value);
+    .then(async () => {
+      await deleteMenu(node.id);
+      await refreshMenuTree();
+      await refreshAccessMenus();
       ElMessage.success('删除成功');
     })
     .catch(() => {});
-}
-
-function removeNode(id: number, list: MenuItem[]): boolean {
-  const idx = list.findIndex((i) => i.id === id);
-  if (idx > -1) {
-    list.splice(idx, 1);
-    return true;
-  }
-  for (const item of list) {
-    if (item.children && removeNode(id, item.children)) return true;
-  }
-  return false;
 }
 
 function toggleStatus(node: MenuItem) {
@@ -286,26 +156,15 @@ function toggleStatus(node: MenuItem) {
     '状态切换',
     { type: 'info' },
   )
-    .then(() => {
-      node.status = next;
-      // 如果是根级 catalog 且被禁用，则其子级全部禁用
-      if (node.pid === undefined && node.type === 'catalog' && next === 0) {
-        disableChildren(node);
-      }
+    .then(async () => {
+      const updated = await toggleMenuStatus(node.id);
+      await refreshMenuTree();
       ElMessage.success('状态已更新');
-      // 同步前端路由菜单可见性
-      syncRouteMenuStatus(node);
-      if (node.children) node.children.forEach((c) => syncRouteMenuStatus(c));
+      syncRouteMenuStatus(updated || { ...node, status: next });
+      if (updated?.children) updated.children.forEach((c) => syncRouteMenuStatus(c));
+      await refreshAccessMenus();
     })
     .catch(() => {});
-}
-
-function disableChildren(parent: MenuItem) {
-  if (!parent.children) return;
-  parent.children.forEach((child) => {
-    child.status = 0;
-    disableChildren(child);
-  });
 }
 
 // 根据菜单节点的 status 将对应路由的 meta.hideInMenu 动态更新
@@ -328,6 +187,11 @@ const menuTypeOptions = [
   { label: '内嵌', value: 'embedded' },
   { label: '外链', value: 'link' },
 ];
+
+onMounted(async () => {
+  await refreshMenuTree();
+  await refreshAccessMenus();
+});
 </script>
 
 <template>

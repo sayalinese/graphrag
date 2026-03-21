@@ -402,7 +402,7 @@ const handleKgHighlight = (payload: KgHighlightPayload) => {
         <div class="flex h-full flex-col">
           <div class="flex-1 min-h-0 px-3 pb-3 pt-3">
             <KgChatWindow
-              v-model:doc-id="params.selectedDatabase"
+              v-model:selected-database="params.selectedDatabase"
               @select-entity="handleSelectEntity"
               @highlight-entities="handleHighlightEntities"
               @highlight-knowledge="handleHighlightKnowledge"

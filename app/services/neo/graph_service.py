@@ -328,7 +328,7 @@ class GraphService:
             logger.error(f"路径查询失败: {e}")
             return None
     
-    def get_graph_stats(self) -> Dict[str, int]:
+    def get_graph_stats(self, database: Optional[str] = None) -> Dict[str, int]:
         """
         获取图谱统计信息
         
@@ -337,10 +337,10 @@ class GraphService:
         """
         try:
             node_count_query = "MATCH (n) RETURN count(n) as count"
-            rel_count_query = "MATCH ()-[r]-() RETURN count(r) as count"
+            rel_count_query = "MATCH ()-[r]->() RETURN count(r) as count"
             
-            node_count = self.execute_query_single(node_count_query)["count"]
-            rel_count = self.execute_query_single(rel_count_query)["count"]
+            node_count = self.execute_query_single(node_count_query, database=database)["count"]
+            rel_count = self.execute_query_single(rel_count_query, database=database)["count"]
             avg_degree = rel_count / node_count if node_count else 0.0
             
             return {

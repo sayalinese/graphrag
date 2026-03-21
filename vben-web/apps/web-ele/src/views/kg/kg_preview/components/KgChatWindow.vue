@@ -55,10 +55,10 @@
           </ElSelect>
           
           <ElSelect
-            v-model="selectedDocId"
+            v-model="selectedDatabase"
             size="small"
             style="width: 100px"
-            placeholder="选择知识库"
+            placeholder="选择数据库"
             class="doc-select"
             popper-class="doc-select-dropdown"
             :teleported="true"
@@ -68,12 +68,12 @@
               <el-icon class="text-gray-400"><Document /></el-icon>
             </template>
             <ElOption
-              v-for="doc in documents"
-              :key="doc.name"
-              :value="doc.name"
-              :label="doc.name"
+              v-for="database in databases"
+              :key="database.name"
+              :value="database.name"
+              :label="database.name"
             >
-              <div class="truncate">{{ doc.name }}</div>
+              <div class="truncate">{{ database.name }}</div>
             </ElOption>
           </ElSelect>
         </div>
@@ -511,7 +511,7 @@ import {
 } from '../utils/api';
 
 const props = defineProps<{
-  docId?: string;
+  selectedDatabase?: string;
 }>();
 
 const emit = defineEmits<{
@@ -525,7 +525,7 @@ const emit = defineEmits<{
     maxDepth: number;
     graph?: { nodes: any[]; edges: any[]; links?: any[] };
   }];
-  'update:docId': [docId: string];
+  'update:selectedDatabase': [database: string];
   close: [];
 }>();
 
@@ -553,26 +553,38 @@ const selectedStrategy = ref<SearchStrategy>('auto');
 const serviceStatus = ref<'checking' | 'online' | 'offline'>('checking');
 const graphStatsInfo = ref<{ nodes: number; edges: number; communities?: number } | null>(null);
 
-// 文档选择
-const documents = ref<Neo4jDatabaseInfo[]>([]);
-const selectedDocId = ref<string>(props.docId || '');
+// 数据库选择
+const databases = ref<Neo4jDatabaseInfo[]>([]);
+const selectedDatabase = ref<string>(props.selectedDatabase || '');
 
-// 监听外部 docId 变化
-watch(() => props.docId, (newVal) => {
-  if (newVal !== undefined && newVal !== selectedDocId.value) {
-    selectedDocId.value = newVal;
+function refreshWelcomeMessage() {
+  if (messages.value.length === 1 && messages.value[0]?.role === 'assistant') {
+    messages.value = [];
+    addWelcomeMessage();
+  }
+}
+
+// 监听外部数据库变化
+watch(() => props.selectedDatabase, (newVal) => {
+  if (newVal !== undefined && newVal !== selectedDatabase.value) {
+    selectedDatabase.value = newVal;
   }
 });
 
-// 监听内部选择变化，通知父组件
-watch(selectedDocId, (newVal) => {
-  emit('update:docId', newVal);
+// 监听内部选择变化，通知父组件并刷新图谱状态
+watch(selectedDatabase, async (newVal, oldVal) => {
+  emit('update:selectedDatabase', newVal);
+  if (newVal === oldVal) {
+    return;
+  }
+  await checkServiceStatus();
+  refreshWelcomeMessage();
 });
 
 // 加载 Neo4j 数据库列表
-async function loadDocuments() {
+async function loadDatabases() {
   try {
-    documents.value = await getNeo4jDatabases();
+    databases.value = await getNeo4jDatabases();
   } catch (error) {
     console.error('Failed to load neo4j databases:', error);
   }
@@ -745,11 +757,12 @@ async function streamText(message: KgChatMessage, text: string) {
 async function checkServiceStatus() {
   serviceStatus.value = 'checking';
   try {
-    const stats = await getGraphStats();
+    const stats = await getGraphStats(selectedDatabase.value);
     graphStatsInfo.value = stats;
     serviceStatus.value = 'online';
   } catch (error) {
     console.warn('GraphRAG service check failed:', error);
+    graphStatsInfo.value = null;
     serviceStatus.value = 'offline';
   }
 }
@@ -879,7 +892,7 @@ async function handleSend() {
   }, 800);
 
   try {
-    const activeDatabase = selectedDocId.value || props.docId || '';
+    const activeDatabase = selectedDatabase.value || props.selectedDatabase || '';
     if (!activeDatabase) {
       throw new Error('请先选择知识库（database）');
     }
@@ -1138,7 +1151,7 @@ async function retryConnection() {
 // 初始化
 onMounted(async () => {
   await checkServiceStatus();
-  await loadDocuments();
+  await loadDatabases();
   addWelcomeMessage();
 });
 </script>

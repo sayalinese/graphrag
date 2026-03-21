@@ -13,6 +13,7 @@ def ping():
 from . import chat_api
 from . import knowledge_base_api
 from . import character_api
+from . import menu_api
 
 
 

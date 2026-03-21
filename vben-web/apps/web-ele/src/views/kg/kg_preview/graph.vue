@@ -1131,10 +1131,15 @@ async function fetchGraphData(useDemo = false, forceRefresh = false) {
         100,
         Math.min(5000, Number(props.graphLimit) || 300),
       );
+      const selectedDatabase = props.selectedDatabase?.trim() || '';
+
+      if (selectedDatabase.toLowerCase() === 'system') {
+        throw new Error('system 数据库不支持图谱预览');
+      }
 
       // 尝试从缓存获取数据（除非强制刷新）
       if (!forceRefresh) {
-        const cachedData = getGraphCache(props.selectedDatabase, effectiveLimit);
+        const cachedData = getGraphCache(selectedDatabase, effectiveLimit);
         if (cachedData) {
           graphData.value = cachedData;
           updateGraphData();
@@ -1148,8 +1153,8 @@ async function fetchGraphData(useDemo = false, forceRefresh = false) {
 
       // 构建带数据库参数的 URL
       const urlParams = new URLSearchParams({ limit: String(effectiveLimit) });
-      if (props.selectedDatabase) {
-        urlParams.append('database', props.selectedDatabase);
+      if (selectedDatabase) {
+        urlParams.append('database', selectedDatabase);
       }
       const endpointCandidates = ['/api/kg/visualize', '/kg/visualize'];
       let payload: any = null;
@@ -1189,7 +1194,7 @@ async function fetchGraphData(useDemo = false, forceRefresh = false) {
         throw new Error('后端返回空图数据');
       }
       graphData.value = normalized;
-      setGraphCache(normalized, props.selectedDatabase, effectiveLimit);
+      setGraphCache(normalized, selectedDatabase, effectiveLimit);
       updateGraphData();
       return;
     }

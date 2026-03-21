@@ -12,6 +12,7 @@ export const KB_ROUTES: RouteRecordRaw[] = [
     name: 'KBChat',
     component: () => import('./chat/index.vue'),
     meta: {
+      hideInMenu: true,
       title: $t('page.kb.chat'),
       icon: 'lucide:message-square',
       keepAlive: true,
@@ -22,6 +23,7 @@ export const KB_ROUTES: RouteRecordRaw[] = [
     name: 'KBManagement',
     component: () => import('./management/index.vue'),
     meta: {
+      hideInMenu: true,
       title: $t('page.kb.management'),
       icon: 'lucide:database',
       keepAlive: true,
@@ -32,6 +34,7 @@ export const KB_ROUTES: RouteRecordRaw[] = [
     name: 'KBDocument',
     component: () => import('./document/index.vue'),
     meta: {
+      hideInMenu: true,
       title: '文档管理',
       icon: 'lucide:file-text',
       keepAlive: true,
@@ -42,6 +45,7 @@ export const KB_ROUTES: RouteRecordRaw[] = [
     name: 'CharacterManagement',
     component: () => import('./character/index.vue'),
     meta: {
+      hideInMenu: true,
       title: $t('page.kb.character'),
       icon: 'lucide:users',
       keepAlive: true,
@@ -52,6 +56,7 @@ export const KB_ROUTES: RouteRecordRaw[] = [
     name: 'KBSearch',
     component: () => import('./search/index.vue'),
     meta: {
+      hideInMenu: true,
       title: '知识库搜索',
       icon: 'lucide:search',
       keepAlive: true,

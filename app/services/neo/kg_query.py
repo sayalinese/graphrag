@@ -391,12 +391,13 @@ class KGQuery:
             logger.error(f"获取图谱统计失败: {e}")
             return {}
 
-    def get_document_analysis(self, limit: int = 20) -> List[Dict[str, Any]]:
+    def get_document_analysis(self, limit: int = 20, database: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         获取文档分析数据（关键节点和类型分布）
         
         Args:
             limit: 返回文档数量限制
+            database: Neo4j 数据库名（可选）
             
         Returns:
             文档分析列表
@@ -410,7 +411,7 @@ class KGQuery:
                    COALESCE(n.doc_title, n.source, n.doc_id) as title
             LIMIT $limit
             """
-            docs = self.graph_service.execute_query(cypher_docs, {"limit": limit})
+            docs = self.graph_service.execute_query(cypher_docs, {"limit": limit}, database=database)
             
             results = []
             for doc in docs:
@@ -418,8 +419,6 @@ class KGQuery:
                 title = doc.get('title')
                 
                 # 2. 获取该文档的关键节点（度数最高的前5个）
-                # 注意：这里计算的是该节点在整个图中的度数，或者只计算该文档内的度数？
-                # 通常关键节点是指在整个图中连接丰富的节点，但限定在该文档中出现。
                 cypher_key_nodes = """
                 MATCH (n)
                 WHERE n.doc_id = $doc_id OR n.source = $doc_id
@@ -429,7 +428,7 @@ class KGQuery:
                 ORDER BY degree DESC
                 LIMIT 5
                 """
-                key_nodes_data = self.graph_service.execute_query(cypher_key_nodes, {"doc_id": doc_id})
+                key_nodes_data = self.graph_service.execute_query(cypher_key_nodes, {"doc_id": doc_id}, database=database)
                 
                 key_nodes = []
                 for item in key_nodes_data:
@@ -456,7 +455,7 @@ class KGQuery:
                 RETURN label, count(*) as count
                 ORDER BY count DESC
                 """
-                types_data = self.graph_service.execute_query(cypher_types, {"doc_id": doc_id})
+                types_data = self.graph_service.execute_query(cypher_types, {"doc_id": doc_id}, database=database)
                 
                 node_types = {item.get('label'): item.get('count') for item in types_data}
                 

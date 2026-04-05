@@ -5,7 +5,7 @@ DeepSeek LLM 工具
 
 import logging
 import os
-from typing import List, Dict, Any, Optional, Union
+from typing import Generator, List, Dict, Any, Optional, Union
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
@@ -250,6 +250,22 @@ RIVAL_OF（对手）、CREATED_BY（创造）、HAS_ABILITY（拥有能力）等
         except Exception as e:
             logger.error(f"答案生成失败: {e}")
             return "抱歉，生成答案时出错。"
+
+    def generate_answer_stream(self, query: str, context: str) -> Generator[str, None, None]:
+        """基于上下文流式生成答案，逐 token 产出文本片段"""
+        from langchain_core.messages import HumanMessage, SystemMessage
+        try:
+            messages = [
+                SystemMessage(content="你是一个有帮助的助手。根据提供的上下文信息，用准确、清晰的语言回答用户的问题。如果上下文中没有相关信息，请说明。"),
+                HumanMessage(content=f"上下文信息：\n{context}\n\n用户问题：\n{query}"),
+            ]
+            for chunk in self.llm.stream(messages):
+                token = chunk.content if hasattr(chunk, 'content') else str(chunk)
+                if token:
+                    yield token
+        except Exception as e:
+            logger.error(f"流式答案生成失败: {e}")
+            yield "抱歉，生成答案时出错。"
     
     def query_understanding(self, query: str) -> Dict[str, Any]:
         """

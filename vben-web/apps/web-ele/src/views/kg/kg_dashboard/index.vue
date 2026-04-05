@@ -9,6 +9,7 @@ import {
   Plus, Delete, Edit, Refresh, Connection, 
   Document, DataLine, Link, Odometer 
 } from '@element-plus/icons-vue'
+import { getNeo4jDatabases } from '../kg_preview/utils/api'
 
 interface DocumentAnalysis {
   doc_id: string
@@ -25,6 +26,8 @@ interface DocumentAnalysis {
 const loading = ref(false)
 const docAnalysis = ref<DocumentAnalysis[]>([])
 const connectionInfo = ref<any | null>(null)
+const selectedDatabase = ref('')
+const databaseOptions = ref<Array<{ label: string; value: string }>>([])
 
 // 映射管理相关状态
 const showMappingDialog = ref(false)
@@ -70,7 +73,9 @@ const fetchMappings = async () => {
 const fetchDocAnalysis = async () => {
   try {
     loading.value = true
-    const res = await fetch('/api/kg/documents/analysis?limit=10')
+    const params = new URLSearchParams({ limit: '10' })
+    if (selectedDatabase.value) params.append('database', selectedDatabase.value)
+    const res = await fetch(`/api/kg/documents/analysis?${params}`)
     const data = await res.json()
     if (data.success) {
       docAnalysis.value = data.data
@@ -79,6 +84,21 @@ const fetchDocAnalysis = async () => {
     console.error('获取文档分析失败', e)
   } finally {
     loading.value = false
+  }
+}
+
+// 加载数据库列表
+const fetchDatabases = async () => {
+  try {
+    const dbs = await getNeo4jDatabases()
+    databaseOptions.value = dbs
+      .filter(db => db.name.toLowerCase() !== 'system')
+      .map(db => ({ label: db.name, value: db.name }))
+    if (!selectedDatabase.value && databaseOptions.value.length > 0) {
+      selectedDatabase.value = databaseOptions.value[0]!.value
+    }
+  } catch (e) {
+    console.error('获取数据库列表失败', e)
   }
 }
 
@@ -250,7 +270,8 @@ const refreshData = () => {
 }
 
 // 初始化
-onMounted(() => {
+onMounted(async () => {
+  await fetchDatabases()
   refreshData()
   fetchMappings()
 })
@@ -267,7 +288,16 @@ onMounted(() => {
         </h1>
         <p class="text-gray-500 text-sm mt-1 ml-8">实时监控图谱状态与文档知识分布</p>
       </div>
-      <div class="flex gap-3">
+      <div class="flex gap-3 items-center">
+         <ElSelect
+           v-model="selectedDatabase"
+           placeholder="选择数据库"
+           size="small"
+           class="w-36"
+           @change="fetchDocAnalysis"
+         >
+           <ElOption v-for="db in databaseOptions" :key="db.value" :label="db.label" :value="db.value" />
+         </ElSelect>
          <el-button :icon="Refresh" circle @click="refreshData" />
          <el-button type="primary" :icon="Edit" @click="openMappingDialog">映射管理</el-button>
       </div>

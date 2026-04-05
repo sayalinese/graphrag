@@ -1,21 +1,11 @@
 <script lang="ts" setup>
 import { onMounted, reactive, ref } from 'vue';
 import { ElButton, ElIcon, ElOption, ElSelect, ElTooltip } from 'element-plus';
-import { ChatDotRound, Document, Operation } from '@element-plus/icons-vue';
+import { Document, Operation } from '@element-plus/icons-vue';
 
-import KgChatWindow from './components/KgChatWindow.vue';
 import Graph from './graph.vue';
 import Parameter from './parameter.vue';
 import { getNeo4jDatabases } from './utils/api';
-import type { EntityInfo } from './utils/api';
-
-interface KgHighlightPayload {
-  seedNodeIds: string[];
-  nodeIds: string[];
-  linkIds: string[];
-  maxDepth?: number;
-  graph?: { nodes: any[]; edges: any[] };
-}
 
 interface GraphExpose {
   clearHighlight?: () => void;
@@ -23,6 +13,9 @@ interface GraphExpose {
   getEdges?: () => any[];
   getNodes?: () => any[];
   handleReset?: () => void;
+  graphData?: { value: { nodes: any[]; edges: any[] } };
+  nodeCount?: { value: number };
+  edgeCount?: { value: number };
   highlightElements?: (
     nodeIds: string[],
     linkIds: string[],
@@ -47,11 +40,16 @@ const params = reactive({
 });
 
 const graphRef = ref<GraphExpose>();
-const showChat = ref(true);
 const showParam = ref(true);
-const chatPanelWidth = ref(430);
 const loadingDatabases = ref(false);
-const databaseOptions = ref<Array<{ label: string; value: string }>>([]);
+const databaseOptions = ref<Array<{ label: string; value: string }>>([])
+const graphNodeCount = ref(0);
+const graphEdgeCount = ref(0);
+
+function handleGraphStatsChanged(payload: { nodeCount: number; edgeCount: number }) {
+  graphNodeCount.value = payload.nodeCount;
+  graphEdgeCount.value = payload.edgeCount;
+}
 
 function sanitizeDatabaseName(value?: string) {
   const normalized = value?.trim() || '';
@@ -97,258 +95,6 @@ const handleReset = () => {
   graphRef.value?.handleReset?.();
 };
 
-function normalizeNodeId(value: unknown): string {
-  if (typeof value === 'string') return value;
-  if (typeof value === 'number') return String(value);
-  return '';
-}
-
-function normalizeLinkId(value: unknown): string {
-  if (typeof value === 'string') return value;
-  if (value && typeof value === 'object') {
-    const source = normalizeNodeId((value as any).source);
-    const target = normalizeNodeId((value as any).target);
-    if (source && target) return `${source}-${target}`;
-  }
-  return '';
-}
-
-const buildLayeredHighlight = (seedNodeIds: string[], maxDepth = 3) => {
-  const edges = graphRef.value?.getEdges?.() ?? [];
-  const adjacency = new Map<string, Set<string>>();
-
-  edges.forEach((edge) => {
-    const sourceId = typeof edge.source === 'object' ? (edge.source as any).id : edge.source;
-    const targetId = typeof edge.target === 'object' ? (edge.target as any).id : edge.target;
-    if (!sourceId || !targetId) return;
-
-    if (!adjacency.has(sourceId)) adjacency.set(sourceId, new Set());
-    if (!adjacency.has(targetId)) adjacency.set(targetId, new Set());
-    adjacency.get(sourceId)?.add(targetId);
-    adjacency.get(targetId)?.add(sourceId);
-  });
-
-  const visited = new Set<string>();
-  const queue: Array<{ depth: number; id: string }> = [];
-  seedNodeIds.forEach((id) => {
-    visited.add(id);
-    queue.push({ depth: 0, id });
-  });
-
-  while (queue.length > 0) {
-    const current = queue.shift()!;
-    if (current.depth >= maxDepth) continue;
-
-    const neighbors = adjacency.get(current.id);
-    if (!neighbors) continue;
-
-    neighbors.forEach((neighborId) => {
-      if (visited.has(neighborId)) return;
-      visited.add(neighborId);
-      queue.push({ depth: current.depth + 1, id: neighborId });
-    });
-  }
-
-  const layeredNodeIds = Array.from(visited);
-  const nodeSet = new Set(layeredNodeIds);
-  const layeredLinkIds = edges
-    .filter((edge) => {
-      const sourceId = typeof edge.source === 'object' ? (edge.source as any).id : edge.source;
-      const targetId = typeof edge.target === 'object' ? (edge.target as any).id : edge.target;
-      return nodeSet.has(sourceId) && nodeSet.has(targetId);
-    })
-    .map((edge) => {
-      const sourceId = typeof edge.source === 'object' ? (edge.source as any).id : edge.source;
-      const targetId = typeof edge.target === 'object' ? (edge.target as any).id : edge.target;
-      return `${sourceId}-${targetId}`;
-    });
-
-  return { layeredNodeIds, layeredLinkIds };
-};
-
-const handleSelectEntity = (entity: EntityInfo) => {
-  params.searchKeyword = entity.name || '';
-};
-
-function mapEntitiesToNodeIds(entities: EntityInfo[]): string[] {
-  const nodes = graphRef.value?.getNodes?.() ?? [];
-  if (!nodes.length) return [];
-
-  let targetNodeIds = entities
-    .map((e) => (e.neo_id !== undefined ? String(e.neo_id) : ''))
-    .filter(Boolean)
-    .filter((id) => nodes.some((n) => n.id === id));
-
-  if (!targetNodeIds.length) {
-    targetNodeIds = entities
-      .map((e) => {
-        const hit = nodes.find(
-          (n) =>
-            n.label === e.name ||
-            n.id === e.name ||
-            n.label?.toLowerCase?.() === e.name?.toLowerCase?.()
-        );
-        return hit?.id;
-      })
-      .filter((id): id is string => Boolean(id));
-  }
-
-  return Array.from(new Set(targetNodeIds));
-}
-
-const handleHighlightEntities = (entities: EntityInfo[]) => {
-  if (!entities?.length) return;
-
-  params.searchKeyword = '';
-  params.selectedCategory = '';
-
-  const targetNodeIds = mapEntitiesToNodeIds(entities);
-  if (!targetNodeIds.length) {
-    graphRef.value?.clearHighlight?.();
-    return;
-  }
-
-  const { layeredNodeIds, layeredLinkIds } = buildLayeredHighlight(targetNodeIds, 3);
-  graphRef.value?.highlightElements?.(layeredNodeIds, layeredLinkIds, {
-    seedNodeIds: targetNodeIds,
-    maxDepth: 3,
-  });
-};
-
-const handleHighlightKnowledge = (data: {
-  entities: EntityInfo[];
-  relations: any[];
-  question?: string;
-}) => {
-  handleHighlightEntities(data.entities || []);
-};
-
-const handleKgHighlight = (payload: KgHighlightPayload) => {
-  if (!payload || !graphRef.value) return;
-
-  params.searchKeyword = '';
-  params.selectedCategory = '';
-
-  const maxDepth = Number.isFinite(payload.maxDepth) ? Number(payload.maxDepth) : 3;
-  const hasPayloadGraph =
-    Array.isArray(payload.graph?.nodes) ||
-    Array.isArray(payload.graph?.edges) ||
-    Array.isArray((payload.graph as any)?.links);
-
-  if (hasPayloadGraph) {
-    const payloadNodeIds = Array.from(
-      new Set((payload.nodeIds || []).map(normalizeNodeId).filter(Boolean))
-    );
-    const payloadSeedIds = Array.from(
-      new Set((payload.seedNodeIds || []).map(normalizeNodeId).filter(Boolean))
-    );
-    const payloadLinkIds = Array.from(
-      new Set((payload.linkIds || []).map(normalizeLinkId).filter(Boolean))
-    );
-
-    const finalSeedIds = payloadSeedIds.length
-      ? payloadSeedIds
-      : payloadNodeIds.length
-        ? [payloadNodeIds[0]!]
-        : [];
-
-    graphRef.value.highlightElements?.(payloadNodeIds, payloadLinkIds, {
-      seedNodeIds: finalSeedIds,
-      maxDepth,
-      graph: payload.graph,
-    });
-    return;
-  }
-
-  const nodes = graphRef.value.getNodes?.() ?? [];
-  const edges = graphRef.value.getEdges?.() ?? [];
-  const existingNodeIdSet = new Set(nodes.map((node) => normalizeNodeId(node.id)));
-
-  const normalizedSeedNodeIds = Array.from(
-    new Set(
-      (payload.seedNodeIds || [])
-        .map(normalizeNodeId)
-        .filter((id) => existingNodeIdSet.has(id))
-    )
-  );
-
-  const normalizedNodeIds = Array.from(
-    new Set(
-      (payload.nodeIds || [])
-        .map(normalizeNodeId)
-        .filter((id) => existingNodeIdSet.has(id))
-    )
-  );
-
-  const edgeIdSet = new Set(
-    edges.flatMap((edge) => {
-      const source = normalizeNodeId(
-        typeof edge.source === 'object' ? (edge.source as any).id : edge.source
-      );
-      const target = normalizeNodeId(
-        typeof edge.target === 'object' ? (edge.target as any).id : edge.target
-      );
-      return [`${source}-${target}`, `${target}-${source}`];
-    })
-  );
-
-  let normalizedLinkIds = Array.from(
-    new Set(
-      (payload.linkIds || [])
-        .map(normalizeLinkId)
-        .filter((id) => edgeIdSet.has(id))
-    )
-  );
-
-  const seeds = normalizedSeedNodeIds.length
-    ? normalizedSeedNodeIds
-    : normalizedNodeIds.length
-      ? [normalizedNodeIds[0]!]
-      : [];
-
-  let finalNodeIds = normalizedNodeIds;
-  let finalLinkIds = normalizedLinkIds;
-
-  if (!finalNodeIds.length && seeds.length) {
-    const layered = buildLayeredHighlight(seeds, maxDepth);
-    finalNodeIds = layered.layeredNodeIds;
-    finalLinkIds = layered.layeredLinkIds;
-  }
-
-  if (finalNodeIds.length && !finalLinkIds.length) {
-    const nodeSet = new Set(finalNodeIds);
-    finalLinkIds = edges
-      .filter((edge) => {
-        const source = normalizeNodeId(
-          typeof edge.source === 'object' ? (edge.source as any).id : edge.source
-        );
-        const target = normalizeNodeId(
-          typeof edge.target === 'object' ? (edge.target as any).id : edge.target
-        );
-        return nodeSet.has(source) && nodeSet.has(target);
-      })
-      .map((edge) => {
-        const source = normalizeNodeId(
-          typeof edge.source === 'object' ? (edge.source as any).id : edge.source
-        );
-        const target = normalizeNodeId(
-          typeof edge.target === 'object' ? (edge.target as any).id : edge.target
-        );
-        return `${source}-${target}`;
-      });
-  }
-
-  if (!finalNodeIds.length) {
-    graphRef.value.clearHighlight?.();
-    return;
-  }
-
-  graphRef.value.highlightElements?.(finalNodeIds, finalLinkIds, {
-    seedNodeIds: seeds,
-    maxDepth,
-  });
-};
-
 </script>
 
 <template>
@@ -365,6 +111,7 @@ const handleKgHighlight = (payload: KgHighlightPayload) => {
         :node-size="params.nodeSize"
         :auto-rotate="params.autoRotate"
         :node-style="params.nodeStyle"
+        @stats-changed="handleGraphStatsChanged"
       />
 
       <div v-if="!showParam" class="absolute left-4 top-4 z-[200]">
@@ -405,19 +152,6 @@ const handleKgHighlight = (payload: KgHighlightPayload) => {
         </ElTooltip>
       </div>
 
-      <div v-if="!showChat" class="absolute right-4 top-4 z-10">
-        <ElTooltip content="显示问答面板" placement="left">
-          <ElButton
-            type="primary"
-            circle
-            size="large"
-            class="shadow-lg shadow-blue-900/20"
-            @click="showChat = true"
-          >
-            <el-icon class="text-xl"><ChatDotRound /></el-icon>
-          </ElButton>
-        </ElTooltip>
-      </div>
     </div>
 
     <transition name="slide-left">
@@ -427,32 +161,13 @@ const handleKgHighlight = (payload: KgHighlightPayload) => {
       >
         <Parameter
           :model-value="params"
+          :node-count="graphNodeCount"
+          :edge-count="graphEdgeCount"
           @update:model-value="handleParamUpdate"
           @refresh="handleRefresh"
           @reset="handleReset"
           @close="showParam = false"
         />
-      </div>
-    </transition>
-
-    <transition name="slide-right">
-      <div
-        v-show="showChat"
-        class="absolute bottom-0 right-0 top-0 z-20 h-full border-l border-gray-800/50 bg-[#08162f]/70 shadow-2xl backdrop-blur-md"
-        :style="{ width: `${chatPanelWidth}px` }"
-      >
-        <div class="flex h-full flex-col">
-          <div class="flex-1 min-h-0 px-3 pb-3 pt-3">
-            <KgChatWindow
-              v-model:selected-database="params.selectedDatabase"
-              @select-entity="handleSelectEntity"
-              @highlight-entities="handleHighlightEntities"
-              @highlight-knowledge="handleHighlightKnowledge"
-              @kg-highlight="handleKgHighlight"
-              @close="showChat = false"
-            />
-          </div>
-        </div>
       </div>
     </transition>
   </div>
@@ -481,18 +196,5 @@ const handleKgHighlight = (payload: KgHighlightPayload) => {
   transform: translateX(-20px);
 }
 
-.slide-right-enter-active,
-.slide-right-leave-active {
-  opacity: 1;
-  overflow: hidden;
-  transition: all 0.4s cubic-bezier(0.25, 0.8, 0.25, 1);
-}
-
-.slide-right-enter-from,
-.slide-right-leave-to {
-  width: 0 !important;
-  opacity: 0;
-  transform: translateX(20px);
-}
 </style>
 

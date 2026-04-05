@@ -29,6 +29,8 @@ interface ParamState {
 
 const props = withDefaults(defineProps<{
   modelValue: ParamState
+  nodeCount?: number
+  edgeCount?: number
 }>(), {
   modelValue: () => ({
     searchKeyword: '',
@@ -160,8 +162,8 @@ onMounted(() => {
     </div>
 
     <!-- 顶部操作栏 -->
-    <div class="flex items-center justify-between gap-3 mb-6">
-      <el-select
+    <!-- <div class="flex items-center justify-between gap-3 mb-6"> -->
+      <!-- <el-select
         v-model="localState.nodeStyle"
         size="small"
         class="style-select flex-1"
@@ -170,16 +172,16 @@ onMounted(() => {
       >
         <template #prefix>
           <el-icon class="text-gray-400"><Brush /></el-icon>
-        </template>
-        <el-option
+        </template> -->
+        <!-- <el-option
           v-for="option in styleOptions"
           :key="option.value"
           :label="option.label"
           :value="option.value"
-        />
-      </el-select>
+        /> -->
+      <!-- </el-select> -->
       
-      <button
+      <!-- <button
         @click="handleRefresh"
         :disabled="loading"
         class="px-3 py-1.5 h-8 flex items-center justify-center text-sm font-medium text-cyan-200 rounded-md border border-cyan-500/30 bg-cyan-500/10 hover:bg-cyan-500/20 hover:text-cyan-100 focus:outline-none focus:ring-2 focus:ring-cyan-500/40 disabled:opacity-50 transition-all duration-200"
@@ -188,7 +190,7 @@ onMounted(() => {
         <el-icon v-if="loading" class="text-lg is-loading"><Loading /></el-icon>
         <el-icon v-else class="text-lg"><Refresh /></el-icon>
       </button>
-    </div>
+    </div> -->
 
     <!-- 数据库筛选 -->
     <div class="mb-6 group rounded-xl border border-cyan-500/15 bg-cyan-500/5 p-3">
@@ -320,11 +322,11 @@ onMounted(() => {
       <div class="grid grid-cols-2 gap-3">
         <div class="bg-gray-800/50 p-2 rounded border border-gray-700/30">
           <div class="text-gray-500 text-xs mb-1">节点总数</div>
-          <div class="text-cyan-400 font-mono text-lg leading-none">--</div>
+          <div class="text-cyan-400 font-mono text-lg leading-none">{{ props.nodeCount ?? '--' }}</div>
         </div>
         <div class="bg-gray-800/50 p-2 rounded border border-gray-700/30">
           <div class="text-gray-500 text-xs mb-1">关系总数</div>
-          <div class="text-purple-400 font-mono text-lg leading-none">--</div>
+          <div class="text-purple-400 font-mono text-lg leading-none">{{ props.edgeCount ?? '--' }}</div>
         </div>
       </div>
     </div>

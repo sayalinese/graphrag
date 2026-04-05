@@ -2,7 +2,7 @@
 import { onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 
-import KgChatWindow from '../kg_preview/components/KgChatWindow.vue';
+import KgChatWindow from './components/KgChatWindow.vue';
 import KgGraph2D from './components/KgGraph2D.vue';
 import { baseRequestClient } from '#/api/request';
 

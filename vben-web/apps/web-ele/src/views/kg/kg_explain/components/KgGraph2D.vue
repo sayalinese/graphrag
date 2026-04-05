@@ -5,7 +5,7 @@
       v-if="!hasGraphData"
       class="pointer-events-none absolute inset-0 z-10 flex items-center justify-center px-6 text-center text-sm text-gray-400"
     >
-      No explainable path yet. Ask a question on the left panel.
+      请在左侧对话中输入一个问题，图谱将在此展示
     </div>
   </div>
 </template>

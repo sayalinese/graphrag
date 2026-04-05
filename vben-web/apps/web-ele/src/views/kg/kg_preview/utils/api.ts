@@ -175,6 +175,109 @@ export async function hybridSearch(
   return response.data;
 }
 
+// SSE 事件类型
+export interface StreamMetadataEvent {
+  type: 'metadata';
+  strategy_used: SearchStrategy;
+  entities: EntityInfo[];
+  relations: RelationInfo[];
+  chunks: ChunkInfo[];
+  communities_used: number;
+  evidence: Record<string, any>;
+}
+export interface StreamTokenEvent { type: 'token'; token: string }
+export interface StreamDoneEvent { type: 'done' }
+export interface StreamErrorEvent { type: 'error'; error: string }
+export type StreamEvent = StreamMetadataEvent | StreamTokenEvent | StreamDoneEvent | StreamErrorEvent;
+
+/**
+ * GraphRAG 流式混合搜索 - 使用 SSE 实时返回 LLM 生成内容
+ *
+ * 回调说明：
+ *  onMetadata  — 检索完成，携带实体/关系/chunks（在 LLM 开始前触发）
+ *  onToken     — 每个 LLM 输出 token
+ *  onDone      — 流结束
+ *  onError     — 出错
+ */
+export async function hybridSearchStream(
+  question: string,
+  strategy: SearchStrategy = 'auto',
+  topK: number = 20,
+  chatHistory: ChatHistoryItem[] = [],
+  callbacks: {
+    onMetadata?: (meta: StreamMetadataEvent) => void;
+    onToken?: (token: string) => void;
+    onDone?: () => void;
+    onError?: (err: string) => void;
+  },
+  sessionId?: string,
+  docId?: string,
+  database?: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  const apiBase = (import.meta.env.VITE_GLOB_API_URL as string) || '/api';
+  const url = `${apiBase}/kg/graphrag/hybrid_search/stream`;
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      question,
+      strategy,
+      top_k: topK,
+      chat_history: chatHistory,
+      session_id: sessionId,
+      doc_id: docId,
+      database,
+    }),
+    signal,
+  });
+
+  if (!response.ok || !response.body) {
+    const text = await response.text().catch(() => '');
+    throw new Error(`Stream request failed: ${response.status} ${text}`);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    // SSE 各事件以 \n\n 分隔
+    const parts = buffer.split('\n\n');
+    buffer = parts.pop() ?? '';
+
+    for (const part of parts) {
+      const line = part.trim();
+      if (!line.startsWith('data:')) continue;
+      const jsonStr = line.slice(5).trim();
+      if (!jsonStr) continue;
+      let event: StreamEvent;
+      try {
+        event = JSON.parse(jsonStr) as StreamEvent;
+      } catch {
+        continue;
+      }
+      if (event.type === 'metadata') {
+        callbacks.onMetadata?.(event);
+      } else if (event.type === 'token') {
+        callbacks.onToken?.(event.token);
+      } else if (event.type === 'done') {
+        callbacks.onDone?.();
+        return;
+      } else if (event.type === 'error') {
+        callbacks.onError?.(event.error);
+        return;
+      }
+    }
+  }
+  callbacks.onDone?.();
+}
+
 /**
  * 閼惧嘲褰?KG 娴兼俺鐦介崚妤勩€?
  */

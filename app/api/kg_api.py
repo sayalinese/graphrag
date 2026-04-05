@@ -5,7 +5,7 @@ from collections import defaultdict
 import os
 import re
 import uuid
-from flask import Blueprint, request, jsonify, current_app
+from flask import Blueprint, request, jsonify, current_app, Response, stream_with_context
 from app.services.rag_service import RAGService
 from app.services.neo.mapping_manager import MappingManager
 from app.models import ChatSession, ChatMessage, Document, DocumentChunk, KnowledgeBase, User, UserSession
@@ -1305,18 +1305,14 @@ def get_documents_analysis():
     """获取文档分析数据（关键节点和类型分布）"""
     try:
         limit = request.args.get('limit', 20, type=int)
+        database = _normalize_graph_database(request.args.get('database', None, type=str))
         rag_service = get_rag_service()
         
         # 确保 rag_service.kg_query 有 get_document_analysis 方法
-        # 如果没有（例如旧版本），则需要更新 kg_query.py
         if not hasattr(rag_service.kg_query, 'get_document_analysis'):
              return jsonify({"success": False, "error": "Method not implemented"}), 501
              
-        analysis = rag_service.kg_query.get_document_analysis(limit=limit)
-        
-        # 序列化结果中的 Neo4j 对象（如果有）
-        # get_document_analysis 已经返回了字典结构，但为了保险起见，可以再处理一下
-        # 这里假设 get_document_analysis 返回的是纯 Python 字典/列表
+        analysis = rag_service.kg_query.get_document_analysis(limit=limit, database=database)
         
         return jsonify({"success": True, "data": analysis})
     except Exception as e:
@@ -2458,7 +2454,119 @@ def graphrag_hybrid_search():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
-@kg_bp.route('/graphrag/detect_communities', methods=['POST'])
+@kg_bp.route('/graphrag/hybrid_search/stream', methods=['POST'])
+def graphrag_hybrid_search_stream():
+    """GraphRAG 流式混合搜索 - 返回 SSE 流，先推元数据再逐 token 推答案"""
+    import json as _json
+
+    try:
+        data = request.json or {}
+        question = data.get('question') or data.get('q') or ''
+        top_k = int(data.get('top_k', 5))
+        strategy = data.get('strategy', 'auto')
+        chat_history = data.get('chat_history', [])
+        session_id = data.get('session_id')
+        doc_id = data.get('doc_id')
+        try:
+            database = _require_graph_database(data.get('database'))
+        except ValueError as exc:
+            def _err():
+                yield f"data: {_json.dumps({'type': 'error', 'error': str(exc)}, ensure_ascii=False)}\n\n"
+            return Response(stream_with_context(_err()), mimetype='text/event-stream')
+
+        if not question:
+            def _err():
+                yield f"data: {_json.dumps({'type': 'error', 'error': 'question is required'}, ensure_ascii=False)}\n\n"
+            return Response(stream_with_context(_err()), mimetype='text/event-stream')
+
+        svc = get_graphrag_service()
+        if not svc or not hasattr(svc, 'hybrid_search_stream'):
+            def _err():
+                yield f"data: {_json.dumps({'type': 'error', 'error': 'GraphRAG streaming unavailable'}, ensure_ascii=False)}\n\n"
+            return Response(stream_with_context(_err()), mimetype='text/event-stream')
+
+        # 保存用户消息到 DB（流式开始前）
+        if session_id:
+            try:
+                from datetime import datetime, timezone
+                session = ChatSession.query.filter_by(session_id=session_id).first()
+                if session:
+                    user_msg = ChatMessage(
+                        session_id=session_id,
+                        role='user',
+                        content=question,
+                        timestamp=datetime.now(timezone.utc)
+                    )
+                    db.session.add(user_msg)
+                    session.touch()
+                    db.session.commit()
+            except Exception as e:
+                db.session.rollback()
+                logger.error(f"保存用户消息失败: {e}")
+
+        def _generate():
+            answer_parts = []
+            metadata_snapshot = {}
+            try:
+                with svc._use_database(database):
+                    for chunk in svc.hybrid_search_stream(
+                        question,
+                        top_k=top_k,
+                        strategy=strategy,
+                        chat_history=chat_history,
+                        doc_id=doc_id,
+                        database=database,
+                    ):
+                        # 收集 token 以便事后入库
+                        try:
+                            parsed = _json.loads(chunk[len("data: "):].strip())
+                            if parsed.get('type') == 'token':
+                                answer_parts.append(parsed.get('token', ''))
+                            elif parsed.get('type') == 'metadata':
+                                metadata_snapshot = parsed
+                        except Exception:
+                            pass
+                        yield chunk
+            except Exception as e:
+                logger.error(f"SSE stream error: {e}")
+                yield f"data: {_json.dumps({'type': 'error', 'error': str(e)}, ensure_ascii=False)}\n\n"
+                return
+
+            # 流结束后保存 AI 消息到 DB
+            if session_id and answer_parts:
+                try:
+                    from datetime import datetime, timezone
+                    session = ChatSession.query.filter_by(session_id=session_id).first()
+                    if session:
+                        full_answer = ''.join(answer_parts)
+                        sources = {'local': metadata_snapshot} if metadata_snapshot else None
+                        ai_msg = ChatMessage(
+                            session_id=session_id,
+                            role='assistant',
+                            content=full_answer,
+                            sources=sources,
+                            timestamp=datetime.now(timezone.utc)
+                        )
+                        db.session.add(ai_msg)
+                        session.touch()
+                        db.session.commit()
+                except Exception as e:
+                    db.session.rollback()
+                    logger.error(f"保存 AI 消息失败: {e}")
+
+        return Response(
+            stream_with_context(_generate()),
+            mimetype='text/event-stream',
+            headers={
+                'Cache-Control': 'no-cache',
+                'X-Accel-Buffering': 'no',
+            }
+        )
+    except Exception as e:
+        logger.error(f"graphrag_hybrid_search_stream setup failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
 def graphrag_detect_communities():
     """触发 Leiden 社区检测"""
     try:

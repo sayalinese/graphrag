@@ -485,7 +485,7 @@ import MarkdownIt from 'markdown-it';
 import hljs from 'highlight.js';
 import 'highlight.js/styles/github-dark.css';
 import {
-  hybridSearch,
+  hybridSearchStream,
   getGraphStats,
   getKgSessions,
   createKgSession,
@@ -498,7 +498,7 @@ import {
   type EntityInfo,
   type RelationInfo,
   type Neo4jDatabaseInfo,
-} from '../utils/api';
+} from '../../kg_preview/utils/api';
 
 const props = defineProps<{
   selectedDatabase?: string;
@@ -685,10 +685,10 @@ function normalizeVisibleStrategy(strategy: SearchStrategy | undefined): SearchS
 
 // 预设问题
 const presetQuestions = [
-  '这个故事涉及哪些主要人物？',
-  '文档中有哪些重要的组织？',
-  '主角与其他角色之间有什么关系？',
-  '故事发生在哪些地点？',
+  '该病的常见症状有哪些？',
+  '该疾病的诊断标准是什么？',
+  '有哪些推荐的治疗方案或用药？',
+  '该病与哪些并发症或相关疾病有关联？',
 ];
 
 // 计算属性
@@ -732,20 +732,6 @@ function renderMarkdown(content: string): string {
 }
 
 // 流式输出文本
-async function streamText(message: KgChatMessage, text: string) {
-  message.content = '';
-  const delay = 30;
-  
-  for (const char of text) {
-    message.content += char;
-    await new Promise(resolve => setTimeout(resolve, delay));
-    if (message.content.length % 5 === 0) {
-       scrollToBottom();
-    }
-  }
-  await scrollToBottom();
-}
-
 // 检查服务状态
 async function checkServiceStatus() {
   serviceStatus.value = 'checking';
@@ -774,38 +760,6 @@ function buildApiChatHistory(limit = 12) {
     }));
 
   return history.slice(-limit);
-}
-
-function buildDemoEntitiesByQuestion(question: string): EntityInfo[] {
-  const normalized = question.toLowerCase();
-  const entityPool: Array<{ keywords: string[]; entity: EntityInfo }> = [
-    { keywords: ['肺炎', '发热', '呼吸', '咳嗽'], entity: { name: '肺炎', type: 'DISEASE', description: '呼吸系统疾病实体' } },
-    { keywords: ['ct', '影像', '检查', '诊断'], entity: { name: 'CT 影像', type: 'PRODUCT', description: '影像诊断相关实体' } },
-    { keywords: ['路径', '流程', '规范'], entity: { name: '临床路径', type: 'CONCEPT', description: '临床诊疗流程知识' } },
-    { keywords: ['检索', '召回', '多模态'], entity: { name: '多模态检索', type: 'CONCEPT', description: '多模态知识检索能力' } },
-    { keywords: ['问答', '知识图谱', '图谱'], entity: { name: '知识图谱问答', type: 'CONCEPT', description: '图谱问答能力节点' } },
-    { keywords: ['医院', '协和', '北京'], entity: { name: '北京协和医院', type: 'ORGANIZATION', description: '医疗机构节点' } },
-    { keywords: ['医院', '瑞金', '上海'], entity: { name: '上海瑞金医院', type: 'ORGANIZATION', description: '医疗机构节点' } },
-    { keywords: ['科室', '呼吸科'], entity: { name: '呼吸科', type: 'DEPARTMENT', description: '医院科室节点' } },
-  ];
-
-  const picked: EntityInfo[] = [];
-  for (const item of entityPool) {
-    const matched = item.keywords.some((keyword) => normalized.includes(keyword));
-    if (matched) {
-      picked.push(item.entity);
-    }
-  }
-
-  if (!picked.length) {
-    return [
-      { name: '知识图谱问答', type: 'CONCEPT', description: '问答中枢节点' },
-      { name: '多模态检索', type: 'CONCEPT', description: '检索扩散节点' },
-      { name: '临床路径', type: 'CONCEPT', description: '流程知识节点' },
-    ];
-  }
-
-  return picked.slice(0, 5);
 }
 
 function buildDemoRelationsByEntities(entities: EntityInfo[]): RelationInfo[] {
@@ -890,114 +844,91 @@ async function handleSend() {
       throw new Error('请先选择知识库（database）');
     }
 
-    const searchResult = await hybridSearch(
+    // 用于在 onMetadata 回调中发出图谱高亮
+    const emitGraphHighlight = (entities: EntityInfo[], relations: RelationInfo[]) => {
+      const graphNodes = JSON.parse(JSON.stringify(entities.map((e: EntityInfo) => ({
+        id: e.name, label: e.name, ...e, value: 1,
+      }))));
+      const graphEdges = JSON.parse(JSON.stringify(relations.map((r: RelationInfo, idx: number) => ({
+        ...r, id: `rel_${idx}`, source: r.source, target: r.target,
+        relationType: r.type, description: r.description,
+      }))));
+      console.log('KgChatWindow: Emitting kg-highlight', {
+        nodeCount: graphNodes.length, edgeCount: graphEdges.length,
+      });
+      emit('kg-highlight', {
+        seedNodeIds: graphNodes.map((n: any) => n.id),
+        nodeIds: graphNodes.map((n: any) => n.id),
+        linkIds: graphEdges.map((e: any) => e.id),
+        maxDepth: 1,
+        graph: { nodes: graphNodes, edges: graphEdges, links: graphEdges },
+      });
+    };
+
+    const lastMessage = messages.value[messages.value.length - 1];
+
+    await hybridSearchStream(
       question,
       normalizeVisibleStrategy(selectedStrategy.value),
       20,
       apiChatHistory,
+      {
+        onMetadata(meta) {
+          if (!lastMessage || lastMessage.role !== 'assistant') return;
+          clearInterval(loadingInterval);
+          lastMessage.loading = false;
+          lastMessage.strategy = normalizeVisibleStrategy(meta.strategy_used || selectedStrategy.value);
+
+          const apiEntities = meta.entities || [];
+          const apiRelations = meta.relations || [];
+
+          // 只有 API 返回了真实数据才更新图谱；无结果时保持图谱原样
+          if (apiEntities.length > 0 || apiRelations.length > 0) {
+            const explainRelations = apiRelations.length > 0
+              ? apiRelations : buildDemoRelationsByEntities(apiEntities);
+
+            lastMessage.entities = apiEntities;
+            lastMessage.relations = explainRelations;
+            lastMessage.chunks = meta.chunks || [];
+            lastMessage.communities_used = meta.communities_used;
+
+            emit('highlight-knowledge', {
+              entities: lastMessage.entities,
+              relations: lastMessage.relations,
+              question,
+            });
+            emitGraphHighlight(apiEntities, explainRelations);
+          } else {
+            lastMessage.chunks = meta.chunks || [];
+            lastMessage.communities_used = meta.communities_used;
+          }
+        },
+        onToken(token) {
+          if (!lastMessage || lastMessage.role !== 'assistant') return;
+          lastMessage.content += token;
+          scrollToBottom();
+        },
+        onDone() {
+          if (lastMessage && lastMessage.role === 'assistant') {
+            lastMessage.loading = false;
+            if (!lastMessage.content) lastMessage.content = '未能生成回答';
+          }
+          scrollToBottom();
+        },
+        onError(err) {
+          if (lastMessage && lastMessage.role === 'assistant') {
+            lastMessage.loading = false;
+            lastMessage.error = err;
+            lastMessage.content = `抱歉，搜索过程中出现错误：${err}。请检查后端服务是否正常运行。`;
+          }
+        },
+      },
       currentSessionId.value,
       undefined,
-      activeDatabase
+      activeDatabase,
     );
-
-    const lastMessage = messages.value[messages.value.length - 1];
-    if (lastMessage && lastMessage.role === 'assistant') {
-      lastMessage.loading = false;
-      lastMessage.strategy = normalizeVisibleStrategy(
-        searchResult.strategy_used || selectedStrategy.value,
-      );
-      const apiEntities = searchResult.local_result?.entities || [];
-      const apiRelations = searchResult.local_result?.relations || [];
-
-      const explainEntities =
-        apiEntities.length > 0 ? apiEntities : buildDemoEntitiesByQuestion(question);
-      const explainRelations =
-        apiRelations.length > 0
-          ? apiRelations
-          : buildDemoRelationsByEntities(explainEntities);
-
-      lastMessage.entities = explainEntities;
-      lastMessage.relations = explainRelations;
-      lastMessage.chunks = searchResult.local_result?.chunks || [];
-      lastMessage.communities_used = searchResult.global_result?.communities_used;
-
-      emit('highlight-knowledge', {
-        entities: lastMessage.entities,
-        relations: lastMessage.relations,
-        question,
-      });
-
-      // Emit kg-highlight for explain view
-      // Important: Deep clone to avoid reactive proxy issues when passed to another view
-      const graphNodes = JSON.parse(JSON.stringify(explainEntities.map(e => ({
-        id: e.name,
-        label: e.name,
-        ...e,
-        value: 1 // Default value
-      }))));
-      
-      const graphEdges = JSON.parse(JSON.stringify(explainRelations.map((r, idx) => ({
-        ...r,
-        id: `rel_${idx}`,
-        source: r.source,
-        target: r.target,
-        relationType: r.type,
-        description: r.description // Ensure description is passed
-      }))));
-
-      // Log for debugging
-      console.log('KgChatWindow: Emitting kg-highlight', { 
-        nodeCount: graphNodes.length, 
-        edgeCount: graphEdges.length,
-        sampleNode: graphNodes[0] 
-      });
-
-      emit('kg-highlight', {
-        seedNodeIds: graphNodes.map((n:any) => n.id),
-        nodeIds: graphNodes.map((n:any) => n.id),
-        linkIds: graphEdges.map((e:any) => e.id),
-        maxDepth: 1,
-        graph: {
-          nodes: graphNodes,
-          edges: graphEdges,
-          links: graphEdges // Dual compatibility
-        }
-      });
-
-      await streamText(lastMessage, searchResult.answer || '未能生成回答');
-    }
   } catch (error: any) {
     console.error('GraphRAG search failed:', error);
-    const fallbackQuestion = question || '知识图谱问答演示';
-    const fallbackEntities = buildDemoEntitiesByQuestion(fallbackQuestion);
-    const fallbackRelations = buildDemoRelationsByEntities(fallbackEntities);
-
-    const fallbackNodes = fallbackEntities.map((e) => ({
-      ...e,
-      id: e.name,
-      label: e.name,
-      value: 1,
-    }));
-    const fallbackEdges = fallbackRelations.map((r, idx) => ({
-      ...r,
-      id: `fallback_rel_${idx}`,
-      source: r.source,
-      target: r.target,
-      relationType: r.type,
-      description: r.description,
-    }));
-
-    emit('kg-highlight', {
-      seedNodeIds: fallbackNodes.map((n) => n.id),
-      nodeIds: fallbackNodes.map((n) => n.id),
-      linkIds: fallbackEdges.map((e) => e.id),
-      maxDepth: 1,
-      graph: {
-        nodes: fallbackNodes,
-        edges: fallbackEdges,
-        links: fallbackEdges,
-      },
-    });
 
     const lastMessage = messages.value[messages.value.length - 1];
     if (lastMessage && lastMessage.role === 'assistant') {

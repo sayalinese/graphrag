@@ -21,6 +21,10 @@ import SpriteText from 'three-spritetext';
 
 import { nodeStyleDefinitions } from './style.vue';
 
+const emit = defineEmits<{
+  'stats-changed': [payload: { nodeCount: number; edgeCount: number }];
+}>();
+
 const props = withDefaults(
   defineProps<{
     autoRotate?: boolean;
@@ -680,6 +684,8 @@ function updateParticleAutoRotate(enabled: boolean) {
   particleAutoRotateActive = enabled;
 }
 const loading = ref(false);
+const nodeCount = ref(0);
+const edgeCount = ref(0);
 const graphData = shallowRef<VisualizerData>({ nodes: [], edges: [] });
 const containerRef = ref<HTMLDivElement | null>(null);
 let graphInstance: ForceGraph3DInstance | null = null;
@@ -1286,6 +1292,9 @@ async function fetchGraphData(forceRefresh = false) {
       const cachedData = getGraphCache(selectedDatabase, effectiveLimit);
       if (cachedData) {
         graphData.value = cachedData;
+        nodeCount.value = cachedData.nodes.length;
+        edgeCount.value = cachedData.edges.length;
+        emit('stats-changed', { nodeCount: cachedData.nodes.length, edgeCount: cachedData.edges.length });
         updateGraphData();
         setTimeout(() => {
           loading.value = false;
@@ -1335,10 +1344,16 @@ async function fetchGraphData(forceRefresh = false) {
     }
     if (!hasGraphContent(normalized)) {
       graphData.value = { nodes: [], edges: [] };
+      nodeCount.value = 0;
+      edgeCount.value = 0;
+      emit('stats-changed', { nodeCount: 0, edgeCount: 0 });
       updateGraphData();
       return;
     }
     graphData.value = normalized;
+    nodeCount.value = normalized.nodes.length;
+    edgeCount.value = normalized.edges.length;
+    emit('stats-changed', { nodeCount: normalized.nodes.length, edgeCount: normalized.edges.length });
     setGraphCache(normalized, selectedDatabase, effectiveLimit);
     updateGraphData();
   } catch (error) {
@@ -1558,12 +1573,12 @@ function highlightElements(
   scheduleFocusZoomToFit();
 }
 
-// 获取当前图谱节点列表（供父组件匹配用�?
+// 获取当前图谱节点列表
 function getNodes(): GraphNode[] {
   return graphData.value.nodes;
 }
 
-// 获取当前图谱连线列表（供父组件匹配用�?
+// 获取当前图谱连线列表
 function getEdges(): GraphEdge[] {
   return graphData.value.edges;
 }
@@ -1580,6 +1595,8 @@ defineExpose({
   getEdges,
   graphData,
   filteredGraph,
+  nodeCount,
+  edgeCount,
 });
 </script>
 
@@ -1620,7 +1637,7 @@ defineExpose({
           当前数据库暂无可展示图谱
         </div>
         <div class="max-w-md px-6 text-sm leading-6 text-slate-400">
-          可以切换数据库、放宽筛选条件，或先执行图谱构建后再查看预览�?
+          可以切换数据库、放宽筛选条件，或先执行图谱构建后再查看预览
         </div>
       </div>
     </Transition>

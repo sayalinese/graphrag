@@ -1,0 +1,8 @@
+{
+    "chat.tools.terminal.autoApprove": {
+        "/^cd \"c:\\\\Users\\\\16960\\\\Desktop\\\\项目\"; conda activate langchain; python -c \"\nimport os\nfrom dotenv import load_dotenv\nload_dotenv\\('\\.env'\\)\n\n# 1\\) 测试 Embedding\nprint\\('=== 测试 Embedding ==='\\)\ntry:\n    from app\\.services\\.embedding import EmbeddingService\n    es = EmbeddingService\\(\\)\n    vec = es\\.embed_query\\('测试'\\)\n    print\\(f'Embedding OK, dim=\\{len\\(vec\\)\\}'\\)\nexcept Exception as e:\n    print\\(f'Embedding FAILED: \\{e\\}'\\)\n\n# 2\\) 测试 DeepSeek LLM\nprint\\(\\)\nprint\\('=== 测试 DeepSeek LLM ==='\\)\ntry:\n    from app\\.utils\\.llm_utils import DeepSeekLLM\n    llm = DeepSeekLLM\\(\n        api_key=os\\.getenv\\('DEEPSEEK_API_KEY',''\\),\n        model=os\\.getenv\\('DEEPSEEK_MODEL','deepseek-chat'\\),\n        api_base=os\\.getenv\\('DEEPSEEK_API_BASE','https://api\\.deepseek\\.com/v1'\\),\n    \\)\n    ans = llm\\.generate_answer\\('你好', '这是上下文'\\)\n    print\\(f'LLM OK, answer len=\\{len\\(ans\\)\\}'\\)\n    print\\(f'Answer: \\{ans\\[:100\\]\\}'\\)\nexcept Exception as e:\n    print\\(f'LLM FAILED: \\{e\\}'\\)\n\n# 3\\) 测试 LLM stream\nprint\\(\\)\nprint\\('=== 测试 LLM Stream ==='\\)\ntry:\n    tokens = \\[\\]\n    for t in llm\\.generate_answer_stream\\('你好', '这是上下文'\\):\n        tokens\\.append\\(t\\)\n    print\\(f'Stream OK, total tokens=\\{len\\(tokens\\)\\}'\\)\n    print\\(f'First 5 tokens: \\{tokens\\[:5\\]\\}'\\)\nexcept Exception as e:\n    print\\(f'Stream FAILED: \\{e\\}'\\)\n\"$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
+    }
+}

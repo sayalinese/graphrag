@@ -5,6 +5,7 @@ import json
 import re
 from contextlib import contextmanager
 from contextvars import ContextVar
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from neo4j import GraphDatabase
 from langchain_community.vectorstores import PGVector
@@ -684,7 +685,7 @@ class GraphRAGService:
 
     # ========== Phase 3: Local Search (混合搜索) ==========
     
-    def local_search(self, question: str, top_k: int = 20, include_community: bool = True, doc_id: str = None, database: str = None) -> Dict[str, Any]:
+    def local_search(self, question: str, top_k: int = 20, include_community: bool = True, doc_id: str = None, database: str = None, return_context_only: bool = False) -> Dict[str, Any]:
         """Local Search: 结合实体、关系和向量检索的混合搜索
         
         搜索流程:
@@ -717,14 +718,20 @@ class GraphRAGService:
             }
         }
 
-        # 1. 第一阶段召回：向量检索更多候选（3x），后续再重排
+        # 1. 第一阶段召回：并行执行向量检索和实体匹配（两者相互独立）
         candidate_k = max(top_k * 3, 30)
-        vector_candidates = self._vector_search_chunks(question, candidate_k, doc_id=doc_id, database=database)
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            future_chunks = executor.submit(
+                self._vector_search_chunks, question, candidate_k,
+                doc_id=doc_id, database=database
+            )
+            future_entities = executor.submit(
+                self._match_entities_from_question, question, doc_id=doc_id
+            )
+        vector_candidates = future_chunks.result()
+        matched_entities = future_entities.result()
         
-        # 2. 从问题中提取并匹配实体（带文档过滤）
-        matched_entities = self._match_entities_from_question(question, doc_id=doc_id)
-        
-        # 3. 从向量命中节点展开实体
+        # 2. 从向量命中节点展开实体
         #    路径 A（文本语料库）：Chunk -[:MENTIONS]-> Entity
         #    路径 B（纯知识图谱）：向量命中节点本身即为 Disease/Drug/Symptom 域节点
         chunk_entity_ids = set()
@@ -857,6 +864,19 @@ class GraphRAGService:
             community_context=result["community_context"]
         )
 
+        # 9. 结构化证据答案（当 LLM 回答过于保守或空时，使用关系证据兜底）
+        structured_answer = self._build_medical_structured_answer(
+            intent=intent,
+            anchors=anchors,
+            relations=result.get("relations", []),
+        )
+
+        # 支持流式调用：return_context_only=True 时不调用 LLM，返回检索中间结果
+        if return_context_only:
+            result['_context'] = context
+            result['_structured_fallback'] = structured_answer
+            return result
+
         # 8. LLM 生成答案
         if self.llm and context:
             try:
@@ -866,12 +886,6 @@ class GraphRAGService:
                 logger.error(f"LLM generate failed: {e}")
                 result["answer"] = ""
 
-        # 9. 结构化证据答案（当 LLM 回答过于保守或空时，使用关系证据兜底）
-        structured_answer = self._build_medical_structured_answer(
-            intent=intent,
-            anchors=anchors,
-            relations=result.get("relations", []),
-        )
         low_conf_phrases = ("没有找到", "无法", "未能", "无相关", "信息不足")
         current_answer = result.get("answer") or ""
         if structured_answer and (not current_answer or any(p in current_answer for p in low_conf_phrases)):
@@ -984,11 +998,13 @@ class GraphRAGService:
             return matched
 
         # 提取候选词（2-6 字连续子串，去重）
-        tokens = list({
+        # 优先保留较长子串（更精确），限制总数以减少 Neo4j 全表扫描压力
+        raw_tokens = {
             question[i:j]
             for i in range(len(question))
             for j in range(i + 2, min(i + 7, len(question) + 1))
-        })
+        }
+        tokens = sorted(raw_tokens, key=len, reverse=True)[:30]
         if not tokens:
             return matched
 
@@ -2505,6 +2521,79 @@ class GraphRAGService:
         except Exception as e:
             logger.error(f"Merge answers failed: {e}")
             return f"【Local Search 答案】\n{local_answer}\n\n【Global Search 答案】\n{global_answer}"
+
+    def hybrid_search_stream(
+        self,
+        question: str,
+        top_k: int = 20,
+        strategy: str = "auto",
+        chat_history: list = None,
+        doc_id: str = None,
+        database: str = None,
+    ):
+        """混合搜索流式版本 - 生成 SSE 事件字符串序列
+
+        先产出一个 metadata 事件（包含实体/关系/chunk），
+        再逐 token 产出 LLM 生成内容，最后产出 done 事件。
+
+        每个 yield 都是完整的 SSE 行，格式为:
+            data: <json>\\n\\n
+        """
+        import json as _json
+
+        enhanced_question = self._build_question_with_history(question, chat_history or [])
+
+        if strategy == "auto":
+            strategy = self._determine_search_strategy(question)
+
+        # --- 检索阶段（不调 LLM）---
+        try:
+            local_result = self.local_search(
+                enhanced_question, top_k=top_k, doc_id=doc_id, database=database,
+                return_context_only=True,
+            )
+        except Exception as e:
+            logger.error(f"hybrid_search_stream retrieval failed: {e}")
+            yield f"data: {_json.dumps({'type': 'error', 'error': str(e)}, ensure_ascii=False)}\n\n"
+            return
+
+        context = local_result.pop('_context', '') or ''
+        structured_fallback = local_result.pop('_structured_fallback', '') or ''
+
+        # 1. 先推送元数据（实体 / 关系 / chunks / strategy_used）
+        metadata_payload = {
+            "type": "metadata",
+            "strategy_used": strategy,
+            "entities": local_result.get("entities", []),
+            "relations": local_result.get("relations", []),
+            "chunks": local_result.get("chunks", []),
+            "communities_used": len(local_result.get("community_context", [])),
+            "evidence": local_result.get("evidence", {}),
+        }
+        yield f"data: {_json.dumps(metadata_payload, ensure_ascii=False)}\n\n"
+
+        # 2. 流式 LLM 生成
+        if self.llm and context:
+            total_tokens = 0
+            try:
+                for token in self.llm.generate_answer_stream(enhanced_question, context):
+                    total_tokens += 1
+                    yield f"data: {_json.dumps({'type': 'token', 'token': token}, ensure_ascii=False)}\n\n"
+            except Exception as e:
+                logger.error(f"hybrid_search_stream LLM failed: {e}")
+                # 用结构化兜底
+                if structured_fallback:
+                    yield f"data: {_json.dumps({'type': 'token', 'token': structured_fallback}, ensure_ascii=False)}\n\n"
+
+            # 如果 LLM 没给出内容，用结构化答案补充
+            if total_tokens == 0 and structured_fallback:
+                yield f"data: {_json.dumps({'type': 'token', 'token': structured_fallback}, ensure_ascii=False)}\n\n"
+        elif structured_fallback:
+            yield f"data: {_json.dumps({'type': 'token', 'token': structured_fallback}, ensure_ascii=False)}\n\n"
+        else:
+            yield f"data: {_json.dumps({'type': 'token', 'token': '未能从知识库中找到相关信息。'}, ensure_ascii=False)}\n\n"
+
+        yield f"data: {_json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
 
     def delete_document(self, doc_id: str) -> Dict[str, Any]:
         """删除文档及其关联的图数据和向量数据"""

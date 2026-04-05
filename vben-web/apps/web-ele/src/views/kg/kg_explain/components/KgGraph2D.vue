@@ -439,16 +439,16 @@ function drawLink(link: any, ctx: CanvasRenderingContext2D, globalScale: number)
   const isHoveredLink = hoveredLinkIds.has(linkId);
   const progress = highlightActive ? (linkProgressMap.get(linkId) ?? 0) : 1;
   const style = relationStyle(link as ExplainLink);
-  const alpha = hoverActive
-    ? isHoveredLink
-      ? 0.98
-      : isPath
-        ? 0.16
-        : 0.03
-    : isPath
-      ? style.alpha
-      : 0.08;
-  const lineWidth = hoverActive
+  const defaultAlpha = isPath ? style.alpha : 0.08;
+    const alpha = hoverActive
+      ? isHoveredLink
+        ? defaultAlpha
+        : isPath
+          ? 0.16
+          : 0
+      : defaultAlpha;
+    if (alpha <= 0) return;
+    const lineWidth = hoverActive
     ? isHoveredLink
       ? style.width + 1.2
       : isPath
@@ -514,17 +514,17 @@ function drawNode(node: any, ctx: CanvasRenderingContext2D, globalScale: number)
         : Math.min(baseScale, 0.82)
     : baseScale;
   const opacity = hoverActive
-    ? isHoverCenter
-      ? 1
-      : isHoveredNode
-        ? Math.max(baseOpacity, 0.92)
+      ? isHoveredNode
+        ? baseOpacity
         : isPath
           ? Math.max(baseOpacity, 0.14)
-          : 0.06
-    : baseOpacity;
-  const label = trimLabel(String(node.name ?? node.label ?? node.id ?? ''), 18);
+          : 0
+      : baseOpacity;
+    const label = trimLabel(String(node.name ?? node.label ?? node.id ?? ''), 18);
 
-  ctx.save();
+    if (opacity <= 0) return;
+
+    ctx.save();
 
   if (isSeed) {
     ctx.beginPath();

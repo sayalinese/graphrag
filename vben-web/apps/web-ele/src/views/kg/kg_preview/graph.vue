@@ -1,4 +1,4 @@
-<script lang="ts" setup>
+﻿<script lang="ts" setup>
 import type {
   ForceGraph3DInstance,
   LinkObject,
@@ -108,13 +108,13 @@ function getGraphCache(
     const entry: GraphCacheEntry = JSON.parse(cached);
     const now = Date.now();
 
-    // 检查是否过期
+    // 检查是否过�?
     if (now - entry.timestamp > GRAPH_CACHE_EXPIRY) {
       sessionStorage.removeItem(GRAPH_CACHE_KEY);
       return null;
     }
 
-    // 检查 database 与 limit 是否匹配
+    // 检�?database �?limit 是否匹配
     if (entry.database !== database || entry.limit !== limit) {
       return null;
     }
@@ -159,15 +159,39 @@ function clearGraphCache(): void {
   console.warn('[Graph Cache] 缓存已清除');
 }
 
-// 高亮状态
+// 高亮状�?
 const highlightedNodeIds = shallowRef<Set<string>>(new Set());
 const highlightedLinkIds = shallowRef<Set<string>>(new Set());
+const hoveredNodeIds = shallowRef<Set<string>>(new Set());
+const hoveredLinkIds = shallowRef<Set<string>>(new Set());
+const hoveredCenterNodeId = ref('');
 const focusedNodeIds = shallowRef<Set<string>>(new Set());
 const focusedLinkIds = shallowRef<Set<string>>(new Set());
 const focusedSeedNodeIds = shallowRef<Set<string>>(new Set());
-const isHighlightActive = computed(
-  () => highlightedNodeIds.value.size > 0 || highlightedLinkIds.value.size > 0,
+const isHoverHighlightActive = computed(
+  () => hoveredNodeIds.value.size > 0 || hoveredLinkIds.value.size > 0,
 );
+const isHighlightActive = computed(
+  () =>
+    highlightedNodeIds.value.size > 0 ||
+    highlightedLinkIds.value.size > 0 ||
+    hoveredNodeIds.value.size > 0 ||
+    hoveredLinkIds.value.size > 0,
+);
+
+function getActiveHighlightedNodeIds(): Set<string> {
+  if (highlightedNodeIds.value.size > 0 || highlightedLinkIds.value.size > 0) {
+    return highlightedNodeIds.value;
+  }
+  return hoveredNodeIds.value;
+}
+
+function getActiveHighlightedLinkIds(): Set<string> {
+  if (highlightedNodeIds.value.size > 0 || highlightedLinkIds.value.size > 0) {
+    return highlightedLinkIds.value;
+  }
+  return hoveredLinkIds.value;
+}
 
 function ensureThree() {
   return threeLib;
@@ -317,7 +341,7 @@ function resolveNodeLabel(
 }
 
 function resolveNodeCategory(rawNode: Record<string, any>): string {
-  // 优先从 properties.type 获取（这是 Neo4j 实体的真实类型）
+  // 优先�?properties.type 获取（这�?Neo4j 实体的真实类型）
   const props = rawNode.properties || rawNode.props || rawNode.data;
   if (props && typeof props === 'object') {
     const typeValue = props.type || props.category || props.kind;
@@ -326,7 +350,7 @@ function resolveNodeCategory(rawNode: Record<string, any>): string {
     }
   }
 
-  // 其次尝试直接属性
+  // 其次尝试直接属�?
   const directType = rawNode.type || rawNode.kind;
   if (
     typeof directType === 'string' &&
@@ -346,7 +370,7 @@ function resolveNodeCategory(rawNode: Record<string, any>): string {
     return category.toUpperCase();
   }
 
-  // 最后尝试 labels
+  // 最后尝�?labels
   if (Array.isArray(rawNode.labels) && rawNode.labels.length > 0) {
     // 过滤掉通用标签
     const specificLabels = rawNode.labels.filter(
@@ -502,7 +526,7 @@ function normalizeBackendGraph(
       1,
     );
 
-    // 提取属性
+    // 提取属�?
     const properties =
       edgeObj.properties || edgeObj.props || edgeObj.data || {};
 
@@ -519,7 +543,7 @@ function normalizeBackendGraph(
           ? String(edgeIdCandidate)
           : `${source}-${target}#${index}`;
 
-    // 提取 description（优先从 properties 中获取，也可能在顶层）
+    // 提取 description（优先从 properties 中获取，也可能在顶层�?
     const description =
       edgeObj.description || properties.description || properties.desc || '';
 
@@ -763,14 +787,18 @@ const filteredGraph = computed<{ edges: GraphEdge[]; nodes: GraphNode[] }>(
   },
 );
 
+const isGraphEmpty = computed(
+  () => !loading.value && !hasGraphContent(filteredGraph.value),
+);
+
 function getCategoryColor(category: string): string {
   if (!category) return categoryColors.DEFAULT || '#95a5a6';
   const upperCategory = category.toUpperCase();
-  // 先查预定义颜色
+  // 先查预定义颜�?
   if (categoryColors[upperCategory]) {
     return categoryColors[upperCategory];
   }
-  // 原始大小写也查一下
+  // 原始大小写也查一�?
   if (categoryColors[category]) {
     return categoryColors[category];
   }
@@ -780,19 +808,72 @@ function getCategoryColor(category: string): string {
 
 function getNodeColor(node: GraphNode): string {
   const baseColor = getCategoryColor(node.category);
-  return baseColor; // 始终保持原色，仅通过透明度区分
+  return baseColor; // 始终保持原色，仅通过透明度区�?
 }
 
 function getNodeOpacity(_node: GraphNode): number {
-  if (!isHighlightActive.value) return 1;
-  // 高亮模式下，默认所有节点透明度为 0.1 (暗淡)
-  // 具体的动画效果由 highlightElements 中的 requestAnimationFrame 直接操作 ThreeJS 对象来实现
-  // 这样可以避免 Vue 响应式系统的性能开销
-  return 0.1;
+  // 不在这里做全局降暗；高亮态的明暗完全交给 applyNodeInteractiveState
+  // 否则被点击的中心节点和相邻节点也会先被整体压暗一层�?
+  return 1;
+}
+
+function applyMaterialOpacity(material: any, opacityMultiplier: number, emphasisMultiplier = 1) {
+  if (!material || typeof material !== 'object') return material;
+
+  const nextMaterial = material.clone ? material.clone() : material;
+  if ('opacity' in nextMaterial && typeof nextMaterial.opacity === 'number') {
+    const baseOpacity = typeof material.opacity === 'number' ? material.opacity : 1;
+    const newOpacity = Math.max(0.05, Math.min(1, baseOpacity * opacityMultiplier));
+    nextMaterial.opacity = newOpacity;
+    // 只在 opacity < 1 时才强制 transparent，保留不透明材质（如核心球）原本的渲染通道
+    if ('transparent' in nextMaterial && newOpacity < 1) {
+      nextMaterial.transparent = true;
+    }
+  }
+  if ('emissiveIntensity' in nextMaterial && typeof nextMaterial.emissiveIntensity === 'number') {
+    const baseEmissiveIntensity =
+      typeof material.emissiveIntensity === 'number' ? material.emissiveIntensity : 0;
+    nextMaterial.emissiveIntensity = baseEmissiveIntensity * emphasisMultiplier;
+  }
+  return nextMaterial;
+}
+
+function applyNodeInteractiveState(object3d: any, node: GraphNode) {
+  if (!object3d || !isHighlightActive.value) return object3d;
+
+  const activeNodeIds = getActiveHighlightedNodeIds();
+  if (activeNodeIds.size === 0) return object3d;
+
+  const nodeId = String(node.id ?? '');
+  const isNeighborHighlighted = activeNodeIds.has(nodeId);
+
+  // 非高亮节点保持原样，不做任何暗化或缩�?
+  if (!isNeighborHighlighted) return object3d;
+
+  const isHoverCenter = isHoverHighlightActive.value && hoveredCenterNodeId.value === nodeId;
+  const scaleMultiplier = isHoverCenter ? 1.12 : 1.04;
+  const emphasisMultiplier = isHoverCenter ? 1.45 : 1.08;
+
+  object3d.scale.multiplyScalar(scaleMultiplier);
+  object3d.traverse?.((child: any) => {
+    if (!child?.material) return;
+    if (Array.isArray(child.material)) {
+      child.material = child.material.map((material: any) =>
+        applyMaterialOpacity(material, 1, emphasisMultiplier),
+      );
+      return;
+    }
+    child.material = applyMaterialOpacity(child.material, 1, emphasisMultiplier);
+  });
+
+  return object3d;
 }
 
 function getLinkColor(link: GraphEdge): string {
   if (!isHighlightActive.value) return 'rgba(102,128,255,0.6)';
+
+  const activeNodeIds = getActiveHighlightedNodeIds();
+  const activeLinkIds = getActiveHighlightedLinkIds();
 
   // 检查两端节点是否都被高亮，如果不是则完全隐藏这条边
   const sourceId =
@@ -800,36 +881,41 @@ function getLinkColor(link: GraphEdge): string {
   const targetId =
     typeof link.target === 'object' ? (link.target as any).id : link.target;
 
-  const sourceHighlighted = highlightedNodeIds.value.has(sourceId);
-  const targetHighlighted = highlightedNodeIds.value.has(targetId);
+  const sourceHighlighted = activeNodeIds.has(sourceId);
+  const targetHighlighted = activeNodeIds.has(targetId);
 
   if (!sourceHighlighted || !targetHighlighted) {
-    // 高亮时，非路径区域连线不再完全隐藏，保留弱可见背景，避免“线消失”错觉
-    return 'rgba(102,128,255,0.08)';
+    // 高亮时，非路径区域连线不再完全隐藏，保留弱可见背景，避免“线消失”错�?
+    return 'rgba(102,128,255,0.35)';
   }
 
   const linkKey = `${sourceId}-${targetId}`;
   const linkKeyReverse = `${targetId}-${sourceId}`;
   const isHighlighted =
-    highlightedLinkIds.value.has(linkKey) ||
-    highlightedLinkIds.value.has(linkKeyReverse);
+    activeLinkIds.has(linkKey) ||
+    activeLinkIds.has(linkKeyReverse);
 
-  // 路径上的边保持弱可见，叠加 pipe 动画后更接近 explain 的逐步显现
+  // 路径上的边保持弱可见，叠�?pipe 动画后更接近 explain 的逐步显现
+  if (isHoverHighlightActive.value) {
+    return isHighlighted ? 'rgba(94,234,212,0.92)' : 'rgba(94,234,212,0.28)';
+  }
   return isHighlighted ? 'rgba(102,128,255,0.2)' : 'rgba(102,128,255,0.1)';
 }
 
 function getLinkWidth(link: GraphEdge): number {
   const baseWidth = Math.max((link.value ?? 1) * 0.45, 1.2);
   if (!isHighlightActive.value) return baseWidth;
-  // 生成连线的匹配 ID
+  const activeNodeIds = getActiveHighlightedNodeIds();
+  const activeLinkIds = getActiveHighlightedLinkIds();
+  // 生成连线的匹�?ID
   const sourceId =
     typeof link.source === 'object' ? (link.source as any).id : link.source;
   const targetId =
     typeof link.target === 'object' ? (link.target as any).id : link.target;
 
   // 检查两端节点是否都被高亮，如果不是则宽度为0
-  const sourceHighlighted = highlightedNodeIds.value.has(sourceId);
-  const targetHighlighted = highlightedNodeIds.value.has(targetId);
+  const sourceHighlighted = activeNodeIds.has(sourceId);
+  const targetHighlighted = activeNodeIds.has(targetId);
   if (!sourceHighlighted || !targetHighlighted) {
     return baseWidth * 0.25;
   }
@@ -837,14 +923,12 @@ function getLinkWidth(link: GraphEdge): number {
   const linkKey = `${sourceId}-${targetId}`;
   const linkKeyReverse = `${targetId}-${sourceId}`;
   const isHighlighted =
-    highlightedLinkIds.value.has(linkKey) ||
-    highlightedLinkIds.value.has(linkKeyReverse);
+    activeLinkIds.has(linkKey) ||
+    activeLinkIds.has(linkKeyReverse);
+  if (isHoverHighlightActive.value) {
+    return isHighlighted ? baseWidth * 2.8 : baseWidth * 1.1;
+  }
   return isHighlighted ? baseWidth * 2.5 : baseWidth * 0.5;
-}
-
-function shouldUseDemoData(): boolean {
-  // 将返回值切换为 true 使用内置演示数据，设为 false 则请求 Neo4j 后端
-  return false;
 }
 
 function normalizeIncomingGraphPayload(
@@ -911,8 +995,8 @@ function createNodeObject(node: GraphNode): any {
     return new SpriteText(node.label);
   }
 
-  // 移除降级逻辑，保持高亮模式下节点样式与默认模式一致
-  // 仅通过透明度区分高亮与非高亮
+  // 移除降级逻辑，保持高亮模式下节点样式与默认模式一�?
+  // 仅通过透明度区分高亮与非高�?
 
   const renderer = resolveNodeRenderer(props.nodeStyle);
   const rendered = renderer?.({
@@ -922,10 +1006,68 @@ function createNodeObject(node: GraphNode): any {
     nodeSize: props.nodeSize,
     showLabels: shouldShowDenseLabel(node),
   });
-  if (rendered) return rendered;
+  if (rendered) return applyNodeInteractiveState(rendered, node);
   const fallbackLabel = new SpriteText(node.label);
   fallbackLabel.color = getCategoryColor(node.category);
-  return fallbackLabel;
+  return applyNodeInteractiveState(fallbackLabel, node);
+}
+
+function clearHoverHighlight() {
+  hoveredCenterNodeId.value = '';
+  hoveredNodeIds.value = new Set();
+  hoveredLinkIds.value = new Set();
+}
+
+function collectHoverNeighborhood(nodeId: string) {
+  const sourceGraph = focusedGraphData.value ?? filteredGraph.value;
+  const nextNodeIds = new Set<string>([nodeId]);
+  const nextLinkIds = new Set<string>();
+
+  sourceGraph.edges.forEach((edge: GraphEdge) => {
+    const sourceId = String(edge.source);
+    const targetId = String(edge.target);
+    if (sourceId !== nodeId && targetId !== nodeId) return;
+
+    nextNodeIds.add(sourceId);
+    nextNodeIds.add(targetId);
+    if (edge.id) {
+      nextLinkIds.add(String(edge.id));
+    }
+    nextLinkIds.add(`${sourceId}-${targetId}`);
+    nextLinkIds.add(`${targetId}-${sourceId}`);
+  });
+
+  return { nextLinkIds, nextNodeIds };
+}
+
+function handleNodeActivate(node: null | NodeObject) {
+  if (highlightedNodeIds.value.size > 0 || highlightedLinkIds.value.size > 0) {
+    return;
+  }
+
+  const hoveredId = String((node as any)?.id ?? '');
+  if (!hoveredId) {
+    if (!isHoverHighlightActive.value) return;
+    clearHoverHighlight();
+    refreshNodeAppearance();
+    applyLinkStyles();
+    return;
+  }
+
+  if (hoveredCenterNodeId.value === hoveredId) {
+    clearHoverHighlight();
+    refreshNodeAppearance();
+    applyLinkStyles();
+    return;
+  }
+
+  const { nextLinkIds, nextNodeIds } = collectHoverNeighborhood(hoveredId);
+  hoveredCenterNodeId.value = hoveredId;
+  hoveredNodeIds.value = nextNodeIds;
+  hoveredLinkIds.value = nextLinkIds;
+
+  refreshNodeAppearance();
+  applyLinkStyles();
 }
 
 function updateGraphData() {
@@ -1096,7 +1238,7 @@ function initForceGraph() {
 					${desc && desc !== link.label ? `<div class="text-gray-300 mb-1 max-w-[200px] whitespace-normal">${desc}</div>` : ''}
 					<div class="text-gray-500 mt-1 pt-1 border-t border-gray-700/50 flex items-center gap-1">
 						<span class="truncate max-w-[80px]">${source}</span>
-						<span>→</span>
+						<span>�?/span>
 						<span class="truncate max-w-[80px]">${target}</span>
 					</div>
 				</div>
@@ -1106,6 +1248,9 @@ function initForceGraph() {
     .linkColor((link: GraphEdge) => getLinkColor(link))
     .warmupTicks(60)
     .cooldownTicks(150)
+    .onNodeClick((node: null | NodeObject) => {
+      handleNodeActivate(node);
+    })
     .onBackgroundClick(() => {
       // 点击背景取消高亮
       clearHighlight();
@@ -1123,204 +1268,89 @@ function initForceGraph() {
   window.addEventListener('resize', updateGraphSize);
 }
 
-async function fetchGraphData(useDemo = false, forceRefresh = false) {
+async function fetchGraphData(forceRefresh = false) {
   loading.value = true;
   try {
-    if (!useDemo) {
-      const effectiveLimit = Math.max(
-        100,
-        Math.min(5000, Number(props.graphLimit) || 300),
-      );
-      const selectedDatabase = props.selectedDatabase?.trim() || '';
+    const effectiveLimit = Math.max(
+      100,
+      Math.min(5000, Number(props.graphLimit) || 300),
+    );
+    const selectedDatabase = props.selectedDatabase?.trim() || '';
 
-      if (selectedDatabase.toLowerCase() === 'system') {
-        throw new Error('system 数据库不支持图谱预览');
+    if (selectedDatabase.toLowerCase() === 'system') {
+      throw new Error('system 数据库不支持图谱预览');
+    }
+
+    // 尝试从缓存获取数据（除非强制刷新）
+    if (!forceRefresh) {
+      const cachedData = getGraphCache(selectedDatabase, effectiveLimit);
+      if (cachedData) {
+        graphData.value = cachedData;
+        updateGraphData();
+        setTimeout(() => {
+          loading.value = false;
+        }, 200);
+        return;
       }
+    }
 
-      // 尝试从缓存获取数据（除非强制刷新）
-      if (!forceRefresh) {
-        const cachedData = getGraphCache(selectedDatabase, effectiveLimit);
-        if (cachedData) {
-          graphData.value = cachedData;
-          updateGraphData();
-          // 缓存命中时，缩短 loading 时间
-          setTimeout(() => {
-            loading.value = false;
-          }, 200);
-          return;
+    // 构建带数据库参数的 URL
+    const urlParams = new URLSearchParams({ limit: String(effectiveLimit) });
+    if (selectedDatabase) {
+      urlParams.append('database', selectedDatabase);
+    }
+    const endpointCandidates = ['/api/kg/visualize', '/kg/visualize'];
+    let payload: any = null;
+    let lastError: any = null;
+
+    for (const endpoint of endpointCandidates) {
+      try {
+        const response = await fetch(`${endpoint}?${urlParams.toString()}`);
+        if (!response.ok) {
+          throw new Error(`请求失败: ${response.status}`);
         }
+        payload = await response.json();
+        lastError = null;
+        break;
+      } catch (error) {
+        lastError = error;
       }
+    }
 
-      // 构建带数据库参数的 URL
-      const urlParams = new URLSearchParams({ limit: String(effectiveLimit) });
-      if (selectedDatabase) {
-        urlParams.append('database', selectedDatabase);
-      }
-      const endpointCandidates = ['/api/kg/visualize', '/kg/visualize'];
-      let payload: any = null;
-      let lastError: any = null;
+    if (!payload) {
+      throw lastError ?? new Error('图谱接口请求失败');
+    }
 
-      for (const endpoint of endpointCandidates) {
-        try {
-          const response = await fetch(`${endpoint}?${urlParams.toString()}`);
-          if (!response.ok) {
-            throw new Error(`请求失败: ${response.status}`);
-          }
-          payload = await response.json();
-          lastError = null;
-          break;
-        } catch (error) {
-          lastError = error;
-        }
-      }
+    const data = payload?.data ?? {};
+    const nodes = data?.nodes ?? data?.vertices ?? data?.entities ?? [];
+    const edges = data?.edges ?? data?.links ?? data?.relations ?? data?.relationships ?? [];
 
-      if (!payload) {
-        throw lastError ?? new Error('图谱接口请求失败');
-      }
+    if (!(payload?.success && Array.isArray(nodes) && Array.isArray(edges))) {
+      throw new Error(payload?.error || '图谱数据格式不正确');
+    }
 
-      const data = payload?.data ?? {};
-      const nodes = data?.nodes ?? data?.vertices ?? data?.entities ?? [];
-      const edges = data?.edges ?? data?.links ?? data?.relations ?? data?.relationships ?? [];
-
-      if (!(payload?.success && Array.isArray(nodes) && Array.isArray(edges))) {
-        throw new Error(payload?.error || '图谱数据格式不正确');
-      }
-
-      let normalized = normalizeBackendGraph(nodes, edges);
-      if (!hasGraphContent(normalized) && ((nodes?.length ?? 0) > 0 || (edges?.length ?? 0) > 0)) {
-        normalized = fallbackNormalizeGraph(nodes, edges);
-      }
-      if (!hasGraphContent(normalized)) {
-        throw new Error('后端返回空图数据');
-      }
-      graphData.value = normalized;
-      setGraphCache(normalized, selectedDatabase, effectiveLimit);
+    let normalized = normalizeBackendGraph(nodes, edges);
+    if (!hasGraphContent(normalized) && ((nodes?.length ?? 0) > 0 || (edges?.length ?? 0) > 0)) {
+      normalized = fallbackNormalizeGraph(nodes, edges);
+    }
+    if (!hasGraphContent(normalized)) {
+      graphData.value = { nodes: [], edges: [] };
       updateGraphData();
       return;
     }
-
-    populateDemoData();
+    graphData.value = normalized;
+    setGraphCache(normalized, selectedDatabase, effectiveLimit);
     updateGraphData();
   } catch (error) {
-    if (!useDemo) {
-      console.warn('获取知识图谱数据失败', error);
-      const reason = error instanceof Error ? error.message : '未知错误';
-      ElMessage.error(`图谱加载失败：${reason}`);
-      return;
-    }
-    console.warn('获取演示数据失败', error);
+    console.warn('获取知识图谱数据失败', error);
+    const reason = error instanceof Error ? error.message : '未知错误';
+    ElMessage.error(`图谱加载失败：${reason}`);
   } finally {
     // 延迟关闭 loading，让图谱有时间渲染和布局，配合淡出动画实现丝滑过渡
     setTimeout(() => {
       loading.value = false;
     }, 600);
   }
-}
-
-function populateDemoData() {
-  const nodes: GraphNode[] = [
-    { id: 'node1', label: '张三', category: 'PERSON', value: 10 },
-    { id: 'node2', label: '李四', category: 'PERSON', value: 8 },
-    { id: 'node3', label: '王五', category: 'PERSON', value: 7 },
-    { id: 'node4', label: '赵六', category: 'PERSON', value: 6 },
-    { id: 'node5', label: '钱七', category: 'PERSON', value: 6 },
-
-    { id: 'node6', label: '产品部', category: 'ORG', value: 9 },
-    { id: 'node7', label: '研发部', category: 'ORG', value: 9 },
-    { id: 'node8', label: '市场部', category: 'ORG', value: 8 },
-    { id: 'node9', label: '数据平台组', category: 'ORG', value: 7 },
-    { id: 'node10', label: '算法组', category: 'ORG', value: 7 },
-
-    { id: 'node11', label: '北京', category: 'GEO', value: 6 },
-    { id: 'node12', label: '上海', category: 'GEO', value: 6 },
-    { id: 'node13', label: '深圳', category: 'GEO', value: 6 },
-
-    { id: 'node14', label: '知识中台', category: 'PRODUCT', value: 8 },
-    { id: 'node15', label: '搜索服务', category: 'PRODUCT', value: 7 },
-    { id: 'node16', label: '推荐引擎', category: 'PRODUCT', value: 6 },
-
-    { id: 'node17', label: '知识图谱', category: 'CONCEPT', value: 7 },
-    { id: 'node18', label: '图数据库', category: 'CONCEPT', value: 7 },
-    { id: 'node19', label: '向量检索', category: 'CONCEPT', value: 6 },
-    { id: 'node20', label: '实体对齐', category: 'CONCEPT', value: 6 },
-    { id: 'node21', label: 'RAG', category: 'CONCEPT', value: 6 },
-    { id: 'node22', label: '数据治理', category: 'CONCEPT', value: 6 },
-
-    { id: 'node23', label: '需求评审', category: 'EVENT', value: 5 },
-    { id: 'node24', label: '上线发布', category: 'EVENT', value: 5 },
-    { id: 'node25', label: '监控告警', category: 'EVENT', value: 5 },
-    { id: 'node26', label: '回归测试', category: 'EVENT', value: 5 },
-
-    { id: 'node27', label: '项目A', category: 'PRODUCT', value: 7 },
-    { id: 'node28', label: '项目B', category: 'PRODUCT', value: 7 },
-    { id: 'node29', label: '项目C', category: 'PRODUCT', value: 6 },
-
-    { id: 'node30', label: '2026Q1', category: 'TIME', value: 4 },
-  ];
-
-  const edges: GraphEdge[] = [
-    { source: 'node1', target: 'node6', label: '隶属', value: 3 },
-    { source: 'node2', target: 'node7', label: '隶属', value: 3 },
-    { source: 'node3', target: 'node7', label: '隶属', value: 2 },
-    { source: 'node4', target: 'node9', label: '隶属', value: 2 },
-    { source: 'node5', target: 'node10', label: '隶属', value: 2 },
-
-    { source: 'node6', target: 'node23', label: '负责', value: 2 },
-    { source: 'node7', target: 'node26', label: '负责', value: 2 },
-    { source: 'node8', target: 'node24', label: '推动', value: 2 },
-    { source: 'node9', target: 'node25', label: '建设', value: 2 },
-    { source: 'node10', target: 'node16', label: '维护', value: 2 },
-
-    { source: 'node1', target: 'node2', label: '合作', value: 2 },
-    { source: 'node2', target: 'node3', label: '导师', value: 1 },
-    { source: 'node3', target: 'node4', label: '评审', value: 1 },
-    { source: 'node4', target: 'node5', label: '对接', value: 1 },
-    { source: 'node5', target: 'node1', label: '反馈', value: 1 },
-
-    { source: 'node6', target: 'node14', label: '规划', value: 3 },
-    { source: 'node7', target: 'node14', label: '研发', value: 3 },
-    { source: 'node8', target: 'node14', label: '推广', value: 2 },
-
-    { source: 'node7', target: 'node15', label: '研发', value: 2 },
-    { source: 'node9', target: 'node15', label: '提供数据', value: 2 },
-    { source: 'node10', target: 'node15', label: '调优', value: 2 },
-
-    { source: 'node10', target: 'node21', label: '落地', value: 2 },
-    { source: 'node9', target: 'node19', label: '接入', value: 2 },
-    { source: 'node7', target: 'node18', label: '选型', value: 2 },
-    { source: 'node14', target: 'node17', label: '包含', value: 2 },
-    { source: 'node17', target: 'node18', label: '依赖', value: 2 },
-    { source: 'node15', target: 'node19', label: '依赖', value: 2 },
-    { source: 'node21', target: 'node19', label: '使用', value: 2 },
-    { source: 'node21', target: 'node17', label: '增强', value: 2 },
-    { source: 'node20', target: 'node17', label: '提升质量', value: 1 },
-    { source: 'node22', target: 'node17', label: '约束', value: 1 },
-
-    { source: 'node11', target: 'node6', label: '驻地', value: 1 },
-    { source: 'node12', target: 'node7', label: '驻地', value: 1 },
-    { source: 'node13', target: 'node8', label: '驻地', value: 1 },
-    { source: 'node11', target: 'node12', label: '协同', value: 1 },
-    { source: 'node12', target: 'node13', label: '协同', value: 1 },
-
-    { source: 'node23', target: 'node26', label: '前置', value: 1 },
-    { source: 'node26', target: 'node24', label: '通过后', value: 1 },
-    { source: 'node24', target: 'node25', label: '触发', value: 1 },
-    { source: 'node25', target: 'node23', label: '反哺', value: 1 },
-
-    { source: 'node27', target: 'node14', label: '子项目', value: 2 },
-    { source: 'node28', target: 'node14', label: '子项目', value: 2 },
-    { source: 'node29', target: 'node15', label: '子项目', value: 2 },
-    { source: 'node27', target: 'node17', label: '构建', value: 2 },
-    { source: 'node28', target: 'node21', label: '探索', value: 2 },
-    { source: 'node29', target: 'node19', label: '集成', value: 2 },
-
-    { source: 'node30', target: 'node23', label: '计划', value: 1 },
-    { source: 'node30', target: 'node24', label: '里程碑', value: 1 },
-    { source: 'node30', target: 'node22', label: '治理窗口', value: 1 },
-    { source: 'node30', target: 'node14', label: '目标交付', value: 1 },
-  ];
-
-  graphData.value = { nodes, edges };
 }
 
 function handleReset() {
@@ -1331,11 +1361,10 @@ function handleReset() {
     1000,
   );
 }
-
 // 强制刷新图谱数据（清除缓存并重新获取）
 function handleRefresh() {
   clearGraphCache();
-  fetchGraphData(shouldUseDemoData(), true);
+  fetchGraphData(true);
   ElMessage.success('正在刷新图谱数据...');
 }
 
@@ -1385,7 +1414,7 @@ watch(
 // 数据库变化时重新获取数据
 watch(
   () => props.selectedDatabase,
-  () => fetchGraphData(shouldUseDemoData()),
+  () => fetchGraphData(),
 );
 watch(
   () => props.graphLimit,
@@ -1394,7 +1423,7 @@ watch(
       clearTimeout(graphLimitFetchTimer);
     }
     graphLimitFetchTimer = setTimeout(() => {
-      fetchGraphData(shouldUseDemoData(), true);
+      fetchGraphData(true);
       graphLimitFetchTimer = null;
     }, 250);
   },
@@ -1406,7 +1435,7 @@ onMounted(async () => {
     ElMessage.error('3D 引擎初始化失败');
     return;
   }
-  await fetchGraphData(shouldUseDemoData());
+  await fetchGraphData();
 });
 
 onBeforeUnmount(() => {
@@ -1429,6 +1458,7 @@ onBeforeUnmount(() => {
 function clearHighlight() {
   currentAnimationId++;
   focusedGraphData.value = null;
+  clearHoverHighlight();
   focusedNodeIds.value.clear();
   focusedLinkIds.value.clear();
   focusedSeedNodeIds.value.clear();
@@ -1518,6 +1548,7 @@ function highlightElements(
     ),
   );
 
+  clearHoverHighlight();
   highlightedNodeIds.value.clear();
   highlightedLinkIds.value.clear();
 
@@ -1527,12 +1558,12 @@ function highlightElements(
   scheduleFocusZoomToFit();
 }
 
-// 获取当前图谱节点列表（供父组件匹配用）
+// 获取当前图谱节点列表（供父组件匹配用�?
 function getNodes(): GraphNode[] {
   return graphData.value.nodes;
 }
 
-// 获取当前图谱连线列表（供父组件匹配用）
+// 获取当前图谱连线列表（供父组件匹配用�?
 function getEdges(): GraphEdge[] {
   return graphData.value.edges;
 }
@@ -1576,6 +1607,20 @@ defineExpose({
           class="animate-pulse text-sm font-medium tracking-wider text-cyan-400"
         >
           正在构建知识图谱...
+        </div>
+      </div>
+    </Transition>
+
+    <Transition name="fade">
+      <div
+        v-if="isGraphEmpty"
+        class="pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center bg-[radial-gradient(circle_at_center,rgba(8,145,178,0.14),rgba(11,18,32,0.94)_55%)] text-center"
+      >
+        <div class="mb-3 text-lg font-semibold tracking-wide text-cyan-300">
+          当前数据库暂无可展示图谱
+        </div>
+        <div class="max-w-md px-6 text-sm leading-6 text-slate-400">
+          可以切换数据库、放宽筛选条件，或先执行图谱构建后再查看预览�?
         </div>
       </div>
     </Transition>

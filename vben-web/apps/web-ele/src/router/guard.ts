@@ -1,5 +1,10 @@
 import type { Router } from 'vue-router';
 
+// ============================================================
+// 临时开关：true = 跳过登录直接进主页，上线前改回 false
+const BYPASS_AUTH = true;
+// ============================================================
+
 import { LOGIN_PATH } from '@vben/constants';
 import { preferences } from '@vben/preferences';
 import { useAccessStore, useUserStore } from '@vben/stores';
@@ -49,6 +54,46 @@ function setupAccessGuard(router: Router) {
     const accessStore = useAccessStore();
     const userStore = useUserStore();
     const authStore = useAuthStore();
+
+    // ── BYPASS_AUTH 模式：跳过登录，直接进主页 ──────────────────
+    if (BYPASS_AUTH) {
+      // 访问登录页时重定向到首页
+      if (coreRouteNames.includes(to.name as string)) {
+        if (to.path === LOGIN_PATH) {
+          return preferences.app.defaultHomePath;
+        }
+        return true;
+      }
+      // 首次进入：注入 mock 数据并生成路由
+      if (!accessStore.isAccessChecked) {
+        accessStore.setAccessToken('bypass-dev');
+        userStore.setUserInfo({
+          userId: '0',
+          username: 'dev',
+          realName: '开发者',
+          roles: ['super'],
+          avatar: '',
+          desc: '',
+          homePath: preferences.app.defaultHomePath,
+          token: 'bypass-dev',
+        });
+        accessStore.setAccessCodes([]);
+        const { accessibleMenus, accessibleRoutes } = await generateAccess({
+          roles: ['super'],
+          router,
+          routes: accessRoutes,
+        });
+        accessStore.setAccessMenus(accessibleMenus);
+        accessStore.setAccessRoutes(accessibleRoutes);
+        accessStore.setIsAccessChecked(true);
+        const target = (from.query.redirect
+          ? decodeURIComponent(from.query.redirect as string)
+          : to.fullPath) || preferences.app.defaultHomePath;
+        return { ...router.resolve(target), replace: true };
+      }
+      return true;
+    }
+    // ── BYPASS_AUTH end ─────────────────────────────────────────
 
     // 基本路由，这些路由不需要进入权限拦截
     if (coreRouteNames.includes(to.name as string)) {

@@ -89,9 +89,11 @@ class EmbeddingService:
 
         # 根据环境变量自动选择提供方，默认使用 HuggingFace
         provider = os.getenv("EMBEDDING_PROVIDER", "huggingface").strip().lower()
+        self.provider = provider
         self.use_openai = use_openai or provider in ("openai", "openai_compatible")
         # 标记当前 embedding 是否已做 L2 归一化（影响相似度映射）
         self.is_normalized = False
+        self.base_url = None
 
         if self.use_openai:
             # 优先读取显式传入的 key，否则从环境读取
@@ -103,6 +105,16 @@ class EmbeddingService:
             else:
                 # 如果显式提供 OPENAI_BASE_URL，也允许 OpenAI 直连时自定义
                 base_url = os.getenv("OPENAI_BASE_URL")
+            self.base_url = base_url
+
+            try:
+                request_timeout = float(os.getenv("OPENAI_EMBEDDING_TIMEOUT", "20"))
+            except Exception:
+                request_timeout = 20.0
+            try:
+                max_retries = int(os.getenv("OPENAI_EMBEDDING_MAX_RETRIES", "1"))
+            except Exception:
+                max_retries = 1
 
             # 尝试用户自定义解析（embedding/openai_compatible）
             if ApiSettingService:
@@ -120,12 +132,16 @@ class EmbeddingService:
                     model=openai_model,
                     openai_api_key=effective_api_key,
                     base_url=base_url,
+                    request_timeout=request_timeout,
+                    max_retries=max_retries,
                     tiktoken_enabled=False,
                 )
             else:
                 self.embeddings = OpenAIEmbeddings(
                     model=openai_model,
                     openai_api_key=effective_api_key,
+                    request_timeout=request_timeout,
+                    max_retries=max_retries,
                     tiktoken_enabled=False,
                 )
             # 对 OpenAI 兼容端点增加客户端归一化，提升相似度稳定性

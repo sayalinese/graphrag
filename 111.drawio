@@ -1,0 +1,227 @@
+<mxfile host="app.diagrams.net" modified="2024-05-24T10:00:00.000Z" agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36" etag="g4A9h7iA" version="24.4.11">
+  <diagram id="AIGC_Architecture" name="AIGC_Architecture">
+    <mxGraphModel dx="1422" dy="791" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1169" pageHeight="827" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="title" value="&lt;b style=&quot;font-size: 24px;&quot;&gt;AIGC 深度伪造检测系统工作流与架构&lt;/b&gt;" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;fontSize=24;" vertex="1" parent="1">
+          <mxGeometry x="380" y="20" width="410" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="FrontendColumn" value="用户 / 前端架构 (Vue 3 + TypeScript + Vite) [端口 3000]" style="swimlane;whiteSpace=wrap;html=1;rounded=1;shadow=0;comic=0;fillColor=#d7e3fc;strokeColor=#a2b6f1;startSize=50;fontSize=14;fontColor=#333333;" vertex="1" parent="1">
+          <mxGeometry x="50" y="80" width="230" height="680" as="geometry" />
+        </mxCell>
+        <mxCell id="UserNode" value="👤&lt;br&gt;用户" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" vertex="1" parent="FrontendColumn">
+          <mxGeometry x="10" y="40" width="40" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="MainDetectionView" value="主检测视图&lt;br&gt;(DetectionView)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#7EA6E0;arcSize=10;fontColor=#333333;fontSize=12;" vertex="1" parent="FrontendColumn">
+          <mxGeometry x="70" y="70" width="140" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="UploadBox" value="📤 支持拖拽上传模块&lt;br&gt;(UploadBox)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#7EA6E0;arcSize=10;fontSize=11;" vertex="1" parent="FrontendColumn">
+          <mxGeometry x="80" y="140" width="120" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="HeatmapSlider" value="🎨 AI 热力图滑块与&lt;br&gt;对比组件&lt;br&gt;(HeatmapSlider)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#7EA6E0;arcSize=10;fontSize=11;" vertex="1" parent="FrontendColumn">
+          <mxGeometry x="80" y="200" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="LogicReport" value="📝 多模态推理报告组件&lt;br&gt;(LogicReport)&lt;br&gt;&lt;br&gt;支持 Markdown 和&lt;br&gt;&lt;think&gt; 流式渲染" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#7EA6E0;arcSize=10;fontSize=11;" vertex="1" parent="FrontendColumn">
+          <mxGeometry x="70" y="270" width="140" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="Pinia" value="⚙ Pinia&lt;br&gt;(用户 ID, 昵称, 历史计数等)" style="parallelogram;perimeter=parallelogramPerimeter;whiteSpace=wrap;html=1;fillColor=#D7E3FC;strokeColor=#7EA6E0;arcSize=10;fontSize=11;" vertex="1" parent="FrontendColumn">
+          <mxGeometry x="80" y="380" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="SessionDetectionView" value="会话纠纷系统&lt;br&gt;(SessionDetectionView)&lt;br&gt;&lt;br&gt;类似 IM 界面, 买家/卖家在&lt;br&gt;同一个会话 ID 房间中" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#7EA6E0;arcSize=10;fontSize=11;" vertex="1" parent="FrontendColumn">
+          <mxGeometry x="70" y="450" width="140" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="FloatingAssistant" value="唤回悬浮 AI 助手&lt;br&gt;(FloatingAssistant)&lt;br&gt;&lt;br&gt;分析历史中的图片, 取证,&lt;br&gt;逻辑推理, 裁决" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#7EA6E0;arcSize=10;fontSize=11;" vertex="1" parent="FrontendColumn">
+          <mxGeometry x="70" y="560" width="140" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="BackendColumn" value="后端架构 (Flask + Python) [端口 5000]" style="swimlane;whiteSpace=wrap;html=1;rounded=1;shadow=0;comic=0;fillColor=#D4F1E4;strokeColor=#82D7B4;startSize=50;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="320" y="80" width="230" height="680" as="geometry" />
+        </mxCell>
+        <mxCell id="FlaskApiGateway" value="Flask API 网关 / 业务逻辑中心" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D4F1E4;strokeColor=#82D7B4;startSize=30;fontSize=13;arcSize=10;swimlane;horizontal=1;fontColor=#333333;" vertex="1" parent="BackendColumn">
+          <mxGeometry x="15" y="60" width="200" height="300" as="geometry" />
+        </mxCell>
+        <mxCell id="UserAuthNode" value="👤&lt;br&gt;鉴权与会话管理" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" vertex="1" parent="FlaskApiGateway">
+          <mxGeometry x="5" y="40" width="60" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="UserModel" value="📋 用户&lt;br&gt;● 用户&lt;br&gt;● 头像" style="text;html=1;align=left;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;fontSize=11;" vertex="1" parent="FlaskApiGateway">
+          <mxGeometry x="110" y="40" width="70" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="DisputeSessionsModel" value="📋 纠纷会话&lt;br&gt;● 纠纷会话" style="text;html=1;align=left;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;fontSize=11;" vertex="1" parent="FlaskApiGateway">
+          <mxGeometry x="110" y="100" width="80" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="MessagesModel" value="📋 消息&lt;br&gt;● 消息" style="text;html=1;align=left;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;fontSize=11;" vertex="1" parent="FlaskApiGateway">
+          <mxGeometry x="110" y="150" width="60" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="LLMService" value="🌐 LLM 驱动的流式服务&lt;br&gt;/explain_logic_stream 接口&lt;br&gt;&lt;br&gt;[Forwarding tokens]&lt;br&gt;&lt;br&gt;外部 API: Qwen2.5-VL, 通过 SiliconFlow" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#82D7B4;arcSize=10;fontSize=11;" vertex="1" parent="BackendColumn">
+          <mxGeometry x="15" y="370" width="200" height="140" as="geometry" />
+        </mxCell>
+        <mxCell id="AIDetectionScheduler" value="⚙ AI 检测调度器&lt;br&gt;&lt;br&gt;● /predict (单个全局)&lt;br&gt;● /predict_dual (融合)&lt;br&gt;&lt;br&gt;调用至 LaF TManager 进行推理" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#82D7B4;arcSize=10;fontSize=11;" vertex="1" parent="BackendColumn">
+          <mxGeometry x="15" y="520" width="200" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="InputImageNode" value="🖼&lt;br&gt;输入图像" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" vertex="1" parent="BackendColumn">
+          <mxGeometry x="10" y="630" width="60" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="AIInferenceColumn" value="AI 推理引擎架构 (service/) (核心)" style="swimlane;whiteSpace=wrap;html=1;rounded=1;shadow=0;comic=0;fillColor=#F1E3FC;strokeColor=#C6A7E0;startSize=50;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="600" y="80" width="230" height="680" as="geometry" />
+        </mxCell>
+        <mxCell id="CascadedInference" value="级联推理策略" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#C6A7E0;arcSize=10;fontSize=13;swimlane;startSize=30;fontColor=#333333;" vertex="1" parent="AIInferenceColumn">
+          <mxGeometry x="15" y="60" width="200" height="280" as="geometry" />
+        </mxCell>
+        <mxCell id="GlobalDetection448" value="对齐图像进行全局检测&lt;br&gt;(448x448)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#C6A7E0;arcSize=10;fontSize=11;" vertex="1" parent="CascadedInference">
+          <mxGeometry x="10" y="40" width="180" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="JudgementFake" value="判定为伪造的置信度 &gt; 阈值&lt;br&gt;(例如, 0.3)?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#C6A7E0;arcSize=10;fontSize=11;rounded=1;" vertex="1" parent="CascadedInference">
+          <mxGeometry x="10" y="100" width="100" height="110" as="geometry" />
+        </mxCell>
+        <mxCell id="SeparateAnomalies" value="分离异常焦点" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#C6A7E0;arcSize=10;fontSize=11;" vertex="1" parent="CascadedInference">
+          <mxGeometry x="120" y="100" width="70" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="LocalRefinement" value="局部精细裁剪" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#C6A7E0;arcSize=10;fontSize=11;" vertex="1" parent="CascadedInference">
+          <mxGeometry x="120" y="140" width="70" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="SecondaryInference224" value="二次推理&lt;br&gt;(224x224)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#C6A7E0;arcSize=10;fontSize=11;" vertex="1" parent="CascadedInference">
+          <mxGeometry x="120" y="180" width="70" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="NoLabel" value="否" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;fontSize=10;" edge="1" parent="CascadedInference" source="JudgementFake" target="FusionClassifierNetwork">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="100" y="270" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="FusionClassifierNetwork" value="三流融合分类器网络 (LaREDeepFakeV11)&lt;br&gt;&lt;br&gt;● 多头注意力融合&lt;br&gt;● 初步 AI 检测裁决" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#C6A7E0;arcSize=10;fontSize=11;" vertex="1" parent="CascadedInference">
+          <mxGeometry x="10" y="240" width="180" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="FeatureExtractorsCluster" value="⚙ 特征提取器集群" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#C6A7E0;arcSize=10;fontSize=13;swimlane;startSize=30;fontColor=#333333;" vertex="1" parent="AIInferenceColumn">
+          <mxGeometry x="15" y="350" width="200" height="320" as="geometry" />
+        </mxCell>
+        <mxCell id="LaREExtractor" value="LaREExtractor (扩散模型重构误差分析 - LaRE 物理特征)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#C6A7E0;arcSize=10;fontSize=11;" vertex="1" parent="FeatureExtractorsCluster">
+          <mxGeometry x="10" y="40" width="180" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="TruForExtractor" value="TruForExtractor (局部篡改痕迹, 可靠性异常)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#C6A7E0;arcSize=10;fontSize=11;" vertex="1" parent="FeatureExtractorsCluster">
+          <mxGeometry x="10" y="110" width="180" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="HighFreqTexture" value="高频纹理提取 (SRM 滤波器, 去除边缘特征)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#C6A7E0;arcSize=10;fontSize=11;" vertex="1" parent="FeatureExtractorsCluster">
+          <mxGeometry x="10" y="170" width="180" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="CLIP" value="全周语义特征 (CLIP)" style="parallelogram;perimeter=parallelogramPerimeter;whiteSpace=wrap;html=1;fillColor=#E1BEE7;strokeColor=#C6A7E0;arcSize=10;fontSize=11;" vertex="1" parent="FeatureExtractorsCluster">
+          <mxGeometry x="10" y="230" width="180" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="ConvNeXt" value="结构特征 (ConvNeXt)" style="parallelogram;perimeter=parallelogramPerimeter;whiteSpace=wrap;html=1;fillColor=#E1BEE7;strokeColor=#C6A7E0;arcSize=10;fontSize=11;" vertex="1" parent="FeatureExtractorsCluster">
+          <mxGeometry x="10" y="270" width="180" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="StorageColumn" value="数据存储层 (PostgreSQL)" style="swimlane;whiteSpace=wrap;html=1;rounded=1;shadow=0;comic=0;fillColor=#FFF4E6;strokeColor=#D6983A;startSize=50;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="880" y="80" width="230" height="680" as="geometry" />
+        </mxCell>
+        <mxCell id="PostgresNode" value="🗄 Postgresql&lt;br&gt;(SQLAlchemy)" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" vertex="1" parent="StorageColumn">
+          <mxGeometry x="20" y="60" width="100" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="UserModelBlock" value="📁 用户&lt;br&gt;● 凭据&lt;br&gt;● 昵称&lt;br&gt;● 头像" style="text;html=1;align=left;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=#FFF4E6;fontSize=11;strokeColor=#D6983A;rounded=1;arcSize=20;" vertex="1" parent="StorageColumn">
+          <mxGeometry x="40" y="110" width="150" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="HisputeSessionsBlock" value="📁 hispute_sessions&lt;br&gt;● 发起人&lt;br&gt;● 被邀请人&lt;br&gt;● 状态&lt;br&gt;● 时间戳" style="text;html=1;align=left;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=#FFF4E6;fontSize=11;strokeColor=#D6983A;rounded=1;arcSize=20;" vertex="1" parent="StorageColumn">
+          <mxGeometry x="40" y="200" width="150" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="MessagesBlock" value="📁 messages&lt;br&gt;● 聊天内容&lt;br&gt;● 用于 ai_detect_data&lt;br&gt;的 JSONB 字段,&lt;br&gt;如果是检测消息" style="text;html=1;align=left;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=#FFF4E6;fontSize=11;strokeColor=#D6983A;rounded=1;arcSize=20;" vertex="1" parent="StorageColumn">
+          <mxGeometry x="40" y="310" width="150" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="FileStorageBlock" value="📁 文件存储&lt;br&gt;&lt;br&gt;● 本地图像/热热图缓存&lt;br&gt;(uploads/)&lt;br&gt;● 模型权重&lt;br&gt;(.pth, .pt 张量,&lt;br&gt;通过环境静态加载)" style="text;html=1;align=left;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=#FFF4E6;fontSize=11;strokeColor=#D6983A;rounded=1;arcSize=20;" vertex="1" parent="StorageColumn">
+          <mxGeometry x="40" y="450" width="150" height="130" as="geometry" />
+        </mxCell>
+        <mxCell id="Link1" value="Yes" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;fontSize=10;" edge="1" parent="1" source="JudgementFake" target="SeparateAnomalies">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="710" y="300" as="sourcePoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="Link2" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="GlobalDetection448" target="JudgementFake">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="Link3" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="SeparateAnomalies" target="LocalRefinement">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="Link4" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="LocalRefinement" target="SecondaryInference224">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="Link5" value="HTTPS&lt;br&gt;(REST API)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;labelBackgroundColor=#FFFFFF;strokeWidth=1;fontSize=10;" edge="1" parent="1" source="MainDetectionView" target="FlaskApiGateway">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="280" y="200" as="sourcePoint" />
+            <mxPoint x="320" y="200" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="Link6" value="HTTPS&lt;br&gt;(REST API)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;labelBackgroundColor=#FFFFFF;strokeWidth=1;fontSize=10;" edge="1" parent="1" source="SessionDetectionView" target="FlaskApiGateway">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="210" y="500" as="sourcePoint" />
+            <mxPoint x="330" y="210" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="Link7" value="SSE&lt;br&gt;(服务器发送&lt;br&gt;事件)&lt;br&gt;用于流式传输" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;labelBackgroundColor=#FFFFFF;strokeWidth=1;fontSize=10;fontStyle=1" edge="1" parent="1" source="LLMService" target="MainDetectionView">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="320" y="440" as="sourcePoint" />
+            <mxPoint x="210" y="320" as="targetPoint" />
+            <Array points="310,440,310,180" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="Link8" value="SSE&lt;br&gt;(服务器发送&lt;br&gt;事件)&lt;br&gt;用于流式传输" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0;exitY=0.75;exitDx=0;exitDy=0;entryX=1;entryY=0.75;entryDx=0;entryDy=0;labelBackgroundColor=#FFFFFF;strokeWidth=1;fontSize=10;fontStyle=1" edge="1" parent="1" source="LLMService" target="FloatingAssistant">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="335" y="475" as="sourcePoint" />
+            <mxPoint x="210" y="635" as="targetPoint" />
+            <Array points="310,475,310,635" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="Link9" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;strokeWidth=1;strokeColor=#D6983A;" edge="1" parent="1" source="FileStorageBlock" target="MessagesBlock">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="Link10" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;strokeWidth=1;strokeColor=#D6983A;" edge="1" parent="1" source="HisputeSessionsBlock" target="UserModelBlock">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="Link11" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;strokeWidth=1;strokeColor=#D6983A;" edge="1" parent="1" source="MessagesBlock" target="HisputeSessionsBlock">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="Link12" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;strokeWidth=1;" edge="1" parent="1" source="FlaskApiGateway" target="GlobalDetection448">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="Link13" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;strokeWidth=1;" edge="1" parent="1" source="FusionClassifierNetwork" target="MessagesModel">
+          <mxGeometry relative="1" as="geometry">
+            <Array points="840,320,840,250" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="Link14" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;strokeWidth=1;" edge="1" parent="1" source="SecondaryInference224" target="FusionClassifierNetwork">
+          <mxGeometry relative="1" as="geometry">
+            <Array points="800,285,800,320" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="Link15" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;strokeWidth=1;" edge="1" parent="1" source="AIDetectionScheduler" target="FeatureExtractorsCluster">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="Link16" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;strokeWidth=1;" edge="1" parent="1" source="InputImageNode" target="AIInferenceColumn">
+          <mxGeometry relative="1" as="geometry">
+            <Array points="560,730,560,680" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="Link17" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0;exitY=0.5;exitDx=0;exitDy=0;strokeWidth=1;" edge="1" parent="1" source="FeatureExtractorsCluster" target="LaREExtractor">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="Link18" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;strokeWidth=1;" edge="1" parent="1" source="LaREExtractor" target="TruForExtractor">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="Link19" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;strokeWidth=1;" edge="1" parent="1" source="TruForExtractor" target="HighFreqTexture">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="Link20" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;strokeWidth=1;" edge="1" parent="1" source="HighFreqTexture" target="CLIP">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="Link21" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;strokeWidth=1;" edge="1" parent="1" source="CLIP" target="ConvNeXt">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="Link22" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;strokeWidth=1;" edge="1" parent="1" source="FeatureExtractorsCluster" target="SecondaryInference224">
+          <mxGeometry relative="1" as="geometry">
+            <Array points="840,680,840,285" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="Link23" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;strokeWidth=1;" edge="1" parent="1" source="FlaskApiGateway" target="PostgresNode">
+          <mxGeometry relative="1" as="geometry">
+            <Array points="840,160,840,160" />
+          </mxGeometry>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

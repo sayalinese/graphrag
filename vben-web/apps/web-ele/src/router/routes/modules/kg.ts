@@ -1,13 +1,11 @@
 import type { RouteRecordRaw } from 'vue-router';
 
-import { BasicLayout } from '#/layouts';
 import { $t } from '#/locales';
 
 const routes: RouteRecordRaw[] = [
   {
     name: 'KgRoot',
     path: '/kg',
-    component: BasicLayout,
     redirect: '/kg/preview',
     meta: {
       icon: 'lucide:network',

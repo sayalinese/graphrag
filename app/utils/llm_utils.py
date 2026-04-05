@@ -4,6 +4,7 @@ DeepSeek LLM 工具
 """
 
 import logging
+import os
 from typing import List, Dict, Any, Optional, Union
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
@@ -87,6 +88,14 @@ class DeepSeekLLM:
         self.api_key = api_key
         self.model = model
         self.api_base = api_base
+        try:
+            request_timeout = float(os.getenv('LLM_REQUEST_TIMEOUT', '20'))
+        except Exception:
+            request_timeout = 20.0
+        try:
+            max_retries = int(os.getenv('LLM_MAX_RETRIES', '1'))
+        except Exception:
+            max_retries = 1
         
         # 初始化 LangChain ChatOpenAI（DeepSeek 兼容 OpenAI 接口）
         self.llm = ChatOpenAI(
@@ -94,9 +103,17 @@ class DeepSeekLLM:
             openai_api_base=api_base,
             model_name=model,
             temperature=0.7,
+            request_timeout=request_timeout,
+            max_retries=max_retries,
         )
         
-        logger.info(f"LLM 初始化成功 (模型: {model})")
+        logger.info(
+            "LLM 初始化成功 (模型: %s, base_url: %s, timeout: %ss, max_retries: %s)",
+            model,
+            api_base,
+            request_timeout,
+            max_retries,
+        )
     
     def extract_entities(self, text: str) -> List[EntityModel]:
         """

@@ -190,6 +190,29 @@ onMounted(() => {
       </button>
     </div>
 
+    <!-- 数据库筛选 -->
+    <div class="mb-6 group rounded-xl border border-cyan-500/15 bg-cyan-500/5 p-3">
+      <label class="text-cyan-300 text-xs font-medium mb-2 block uppercase tracking-wider">数据库</label>
+      <ElSelect
+        v-model="localState.selectedDatabase"
+        class="style-select w-full"
+        popper-class="style-select-dropdown"
+        :teleported="false"
+        :loading="loadingDocs"
+        placeholder="选择数据库..."
+      >
+        <template #prefix>
+          <el-icon class="text-gray-500"><Document /></el-icon>
+        </template>
+        <ElOption
+          v-for="db in databaseOptions"
+          :key="db.value"
+          :label="db.label"
+          :value="db.value"
+        />
+      </ElSelect>
+    </div>
+
     <!-- 搜索 -->
     <div class="mb-6 group">
       <label class="text-gray-400 text-xs font-medium mb-2 block uppercase tracking-wider group-focus-within:text-cyan-400 transition-colors">搜索节点</label>
@@ -223,30 +246,6 @@ onMounted(() => {
           :value="cat.value"
         />
       </ElSelect>
-    </div>
-
-    <!-- 数据库筛选 -->
-    <div class="mb-6 group">
-      <label class="text-gray-400 text-xs font-medium mb-2 block uppercase tracking-wider group-focus-within:text-cyan-400 transition-colors">数据库筛选</label>
-      <ElSelect
-        v-model="localState.selectedDatabase"
-        class="style-select w-full"
-        popper-class="style-select-dropdown"
-        :teleported="false"
-        :loading="loadingDocs"
-        placeholder="选择数据库..."
-      >
-        <template #prefix>
-          <el-icon class="text-gray-500"><Document /></el-icon>
-        </template>
-        <ElOption
-          v-for="db in databaseOptions"
-          :key="db.value"
-          :label="db.label"
-          :value="db.value"
-        />
-      </ElSelect>
-  
     </div>
 
     <!-- 图谱加载上限 -->

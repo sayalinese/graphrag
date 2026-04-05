@@ -68,6 +68,9 @@ interface PathBuildResult {
 const NODE_FADE_DURATION = 380;
 const LINK_DRAW_DURATION = 450;
 const WAVE_DELAY = 220;
+const NODE_CLICK_PADDING = 10;
+const NODE_CLICK_MIN_RADIUS = 16;
+const NODE_DRAG_SUPPRESS_MS = 180;
 
 const containerRef = ref<HTMLDivElement | null>(null);
 const renderedGraph = ref<NormalizedGraph>({ nodes: [], links: [] });
@@ -77,6 +80,8 @@ const visibleNodeIds = new Set<string>();
 const pathNodeIds = new Set<string>();
 const pathLinkIds = new Set<string>();
 const seedNodeIds = new Set<string>();
+const hoveredNodeIds = new Set<string>();
+const hoveredLinkIds = new Set<string>();
 
 const nodeOpacityMap = new Map<string, number>();
 const nodeScaleMap = new Map<string, number>();
@@ -87,6 +92,9 @@ let resizeObserver: ResizeObserver | null = null;
 let animationToken = 0;
 let rafId: number | null = null;
 let highlightActive = false;
+let hoveredCenterNodeId = '';
+let suppressNodeClickUntil = 0;
+let nodeDragged = false;
 
 let zoomRequestId = 0;
 let zoomAppliedId = 0;
@@ -342,6 +350,54 @@ function getFontSize(globalScale: number, min = 10, max = 18) {
   return Math.max(min, Math.min(max, size));
 }
 
+function getNodeBaseRadius(node: any): number {
+  const nodeId = normalizeNodeId(node?.id);
+  const isPath = pathNodeIds.has(nodeId) || Boolean(node?.isPath);
+  const isSeed = seedNodeIds.has(nodeId) || Boolean(node?.isSeed);
+  const baseSize = Math.max(4, Math.min(10, 4 + Math.sqrt(Math.max(1, normalizeNumber(node?.value, 1)))));
+  return baseSize + (isPath ? 2.2 : 0) + (isSeed ? 1.6 : 0);
+}
+
+function getNodeRenderScale(node: any): number {
+  const nodeId = normalizeNodeId(node?.id);
+  const hoverActive = hoveredNodeIds.size > 0;
+  const isHoveredNode = hoveredNodeIds.has(nodeId);
+  const isHoverCenter = hoveredCenterNodeId === nodeId;
+  const baseScale = highlightActive ? (nodeScaleMap.get(nodeId) ?? 0.9) : 1;
+
+  if (!hoverActive) return baseScale;
+  if (isHoverCenter) return Math.max(baseScale, 1.22);
+  if (isHoveredNode) return Math.max(baseScale, 1.08);
+  return Math.min(baseScale, 0.82);
+}
+
+function paintNodePointerArea(node: any, color: string, ctx: CanvasRenderingContext2D, globalScale: number) {
+  if (!Number.isFinite(node?.x) || !Number.isFinite(node?.y)) return;
+
+  const scale = getNodeRenderScale(node);
+  const radius = Math.max(NODE_CLICK_MIN_RADIUS, getNodeBaseRadius(node) * scale + NODE_CLICK_PADDING);
+
+  ctx.save();
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.arc(node.x, node.y, radius, 0, Math.PI * 2);
+  ctx.fill();
+
+  if (globalScale >= 0.35) {
+    const label = trimLabel(String(node?.name ?? node?.label ?? node?.id ?? ''), 18);
+    if (label) {
+      const fontSize = getFontSize(globalScale, 10, 18);
+      ctx.font = `600 ${fontSize}px sans-serif`;
+      const textWidth = ctx.measureText(label).width;
+      const rectX = node.x + radius;
+      const rectY = node.y - fontSize / 2 - 4;
+      ctx.fillRect(rectX, rectY, textWidth + 10, fontSize + 8);
+    }
+  }
+
+  ctx.restore();
+}
+
 function drawRelationLabel(ctx: CanvasRenderingContext2D, label: string, x: number, y: number, alpha: number, globalScale: number) {
   if (!label) return;
   if (globalScale < 0.35) return;
@@ -379,10 +435,28 @@ function drawLink(link: any, ctx: CanvasRenderingContext2D, globalScale: number)
 
   const linkId = String(link.id ?? '');
   const isPath = pathLinkIds.has(linkId) || Boolean(link.isPath);
+  const hoverActive = hoveredNodeIds.size > 0;
+  const isHoveredLink = hoveredLinkIds.has(linkId);
   const progress = highlightActive ? (linkProgressMap.get(linkId) ?? 0) : 1;
   const style = relationStyle(link as ExplainLink);
-  const alpha = isPath ? style.alpha : 0.08;
-  const lineWidth = isPath ? style.width : 1;
+  const alpha = hoverActive
+    ? isHoveredLink
+      ? 0.98
+      : isPath
+        ? 0.16
+        : 0.03
+    : isPath
+      ? style.alpha
+      : 0.08;
+  const lineWidth = hoverActive
+    ? isHoveredLink
+      ? style.width + 1.2
+      : isPath
+        ? Math.max(1.1, style.width * 0.72)
+        : 0.8
+    : isPath
+      ? style.width
+      : 1;
 
   const sx = source.x as number;
   const sy = source.y as number;
@@ -392,7 +466,9 @@ function drawLink(link: any, ctx: CanvasRenderingContext2D, globalScale: number)
   const dy = sy + (ty - sy) * progress;
 
   ctx.save();
-  ctx.strokeStyle = `rgba(103, 232, 249, ${alpha})`;
+  ctx.strokeStyle = hoverActive && isHoveredLink
+    ? 'rgba(34, 211, 238, 0.98)'
+    : `rgba(103, 232, 249, ${alpha})`;
   ctx.lineWidth = lineWidth;
   ctx.setLineDash(isPath ? style.dash : []);
   ctx.beginPath();
@@ -400,7 +476,7 @@ function drawLink(link: any, ctx: CanvasRenderingContext2D, globalScale: number)
   ctx.lineTo(dx, dy);
   ctx.stroke();
 
-  if (isPath && progress > 0.15) {
+  if ((isPath || isHoveredLink) && progress > 0.15) {
     ctx.fillStyle = 'rgba(56, 189, 248, 0.88)';
     ctx.beginPath();
     ctx.arc(dx, dy, 2.2, 0, Math.PI * 2);
@@ -422,12 +498,30 @@ function drawNode(node: any, ctx: CanvasRenderingContext2D, globalScale: number)
 
   const isPath = pathNodeIds.has(nodeId) || Boolean(node.isPath);
   const isSeed = seedNodeIds.has(nodeId) || Boolean(node.isSeed);
+  const hoverActive = hoveredNodeIds.size > 0;
+  const isHoveredNode = hoveredNodeIds.has(nodeId);
+  const isHoverCenter = hoveredCenterNodeId === nodeId;
 
-  const baseSize = Math.max(4, Math.min(10, 4 + Math.sqrt(Math.max(1, normalizeNumber(node.value, 1)))));
-  const radius = baseSize + (isPath ? 2.2 : 0) + (isSeed ? 1.6 : 0);
+  const radius = getNodeBaseRadius(node);
 
-  const scale = highlightActive ? (nodeScaleMap.get(nodeId) ?? 0.9) : 1;
-  const opacity = highlightActive ? (nodeOpacityMap.get(nodeId) ?? (isPath ? 0.1 : 0.05)) : isPath ? 0.95 : 0.15;
+  const baseScale = highlightActive ? (nodeScaleMap.get(nodeId) ?? 0.9) : 1;
+  const baseOpacity = highlightActive ? (nodeOpacityMap.get(nodeId) ?? (isPath ? 0.1 : 0.05)) : isPath ? 0.95 : 0.15;
+  const scale = hoverActive
+    ? isHoverCenter
+      ? Math.max(baseScale, 1.22)
+      : isHoveredNode
+        ? Math.max(baseScale, 1.08)
+        : Math.min(baseScale, 0.82)
+    : baseScale;
+  const opacity = hoverActive
+    ? isHoverCenter
+      ? 1
+      : isHoveredNode
+        ? Math.max(baseOpacity, 0.92)
+        : isPath
+          ? Math.max(baseOpacity, 0.14)
+          : 0.06
+    : baseOpacity;
   const label = trimLabel(String(node.name ?? node.label ?? node.id ?? ''), 18);
 
   ctx.save();
@@ -437,6 +531,13 @@ function drawNode(node: any, ctx: CanvasRenderingContext2D, globalScale: number)
     ctx.fillStyle = 'rgba(34, 211, 238, 0.2)';
     ctx.arc(node.x, node.y, (radius * scale) + 7, 0, Math.PI * 2);
     ctx.fill();
+  }
+  if (isHoverCenter) {
+    ctx.beginPath();
+    ctx.strokeStyle = 'rgba(34, 211, 238, 0.96)';
+    ctx.lineWidth = 2.2;
+    ctx.arc(node.x, node.y, (radius * scale) + 5, 0, Math.PI * 2);
+    ctx.stroke();
   }
   if (isPath) {
     ctx.beginPath();
@@ -491,7 +592,24 @@ function initGraph() {
     .linkCanvasObjectMode(() => 'replace')
     .linkCanvasObject((link: any, ctx: CanvasRenderingContext2D, globalScale: number) => drawLink(link, ctx, globalScale))
     .nodeCanvasObject((node: any, ctx: CanvasRenderingContext2D, globalScale: number) => drawNode(node, ctx, globalScale))
-    .onBackgroundClick(() => clearHighlight())
+    .nodePointerAreaPaint((node: any, color: string, ctx: CanvasRenderingContext2D, globalScale: number) =>
+      paintNodePointerArea(node, color, ctx, globalScale),
+    )
+    .onNodeDrag((_node: any, translate: { x?: number; y?: number }) => {
+      if (Math.hypot(translate?.x ?? 0, translate?.y ?? 0) > 0.5) {
+        nodeDragged = true;
+      }
+    })
+    .onNodeDragEnd(() => {
+      if (!nodeDragged) return;
+      suppressNodeClickUntil = performance.now() + NODE_DRAG_SUPPRESS_MS;
+      nodeDragged = false;
+    })
+    .onNodeClick((node: any) => handleNodeActivate(node))
+    .onBackgroundClick(() => {
+      clearHoverHighlight();
+      clearHighlight();
+    })
     .onEngineStop(() => {
       attemptZoomToFit(`engine-stop:${zoomReason || 'unknown'}`);
     })
@@ -568,7 +686,45 @@ function clearHighlight() {
   refreshGraph();
 }
 
+function clearHoverHighlight() {
+  hoveredCenterNodeId = '';
+  hoveredNodeIds.clear();
+  hoveredLinkIds.clear();
+}
+
+function handleNodeActivate(node: any) {
+  if (performance.now() < suppressNodeClickUntil) return;
+
+  const hoveredId = normalizeNodeId(node?.id);
+  if (!hoveredId) {
+    if (hoveredNodeIds.size === 0) return;
+    clearHoverHighlight();
+    refreshGraph();
+    return;
+  }
+
+  if (hoveredCenterNodeId === hoveredId) {
+    clearHoverHighlight();
+    refreshGraph();
+    return;
+  }
+
+  clearHoverHighlight();
+  hoveredCenterNodeId = hoveredId;
+  hoveredNodeIds.add(hoveredId);
+
+  renderedGraph.value.links.forEach((link) => {
+    if (link.sourceId !== hoveredId && link.targetId !== hoveredId) return;
+    hoveredNodeIds.add(link.sourceId);
+    hoveredNodeIds.add(link.targetId);
+    hoveredLinkIds.add(link.id);
+  });
+
+  refreshGraph();
+}
+
 function setGraphData(payload: GraphPayload) {
+  clearHoverHighlight();
   clearHighlight();
   const normalized = normalizeGraphPayload(payload);
   const annotated: NormalizedGraph = {
@@ -583,6 +739,7 @@ function easeOutCubic(value: number): number {
 }
 
 function highlightByWaves(payload: HighlightPayload) {
+  clearHoverHighlight();
   clearAnimation();
 
   const sourceGraph = normalizeGraphPayload(payload.graph);

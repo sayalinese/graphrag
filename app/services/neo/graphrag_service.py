@@ -88,7 +88,13 @@ class GraphRAGService:
         try:
             self._embedding_service = EmbeddingService()
             self._embedding_wrapper = self._embedding_service.embeddings
-            logger.info(f"GraphRAG 使用 EmbeddingService: {self._embedding_service.model_name}")
+            logger.info(
+                "GraphRAG 使用 EmbeddingService: provider=%s model=%s base_url=%s wrapper=%s",
+                getattr(self._embedding_service, 'provider', 'unknown'),
+                self._embedding_service.model_name,
+                getattr(self._embedding_service, 'base_url', None),
+                type(getattr(self._embedding_service, 'embeddings', None)).__name__,
+            )
         except Exception as e:
             logger.warning(f"初始化 EmbeddingService 失败: {e}，回退到 SentenceTransformer")
             self._embedding_service = None

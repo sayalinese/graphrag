@@ -211,16 +211,6 @@
                     </div>
                   </div>
 
-                  <div v-if="!message.entities?.length" class="mt-3">
-                    <button
-                      class="px-3 py-1.5 rounded-md text-xs font-medium border border-cyan-500/40 text-cyan-300 hover:text-cyan-200 hover:bg-cyan-900/25 transition-colors flex items-center gap-1.5"
-                      @click="triggerDemoHighlight()"
-                    >
-                      <span>✨</span>
-                      <span>路径演示</span>
-                    </button>
-                  </div>
-
                   <!-- 附加信息折叠面板 -->
                   <div
                     v-if="
@@ -687,8 +677,11 @@ const strategyOptions = [
   { value: 'auto', label: '自动选择', desc: '智能判断搜索方式' },
   { value: 'local', label: 'Local Search', desc: '基于实体关系的精确搜索' },
   { value: 'global', label: 'Global Search', desc: '基于社区摘要的全局搜索' },
-  { value: 'both', label: '混合搜索', desc: '同时使用两种搜索方式' },
 ];
+
+function normalizeVisibleStrategy(strategy: SearchStrategy | undefined): SearchStrategy {
+  return strategy === 'both' ? 'auto' : (strategy ?? 'auto');
+}
 
 // 预设问题
 const presetQuestions = [
@@ -865,7 +858,7 @@ async function handleSend() {
     timestamp: new Date(),
     loading: true,
     loadingText: '正在分析问题...',
-    strategy: selectedStrategy.value,
+    strategy: normalizeVisibleStrategy(selectedStrategy.value),
   };
   messages.value.push(assistantMessage);
 
@@ -899,7 +892,7 @@ async function handleSend() {
 
     const searchResult = await hybridSearch(
       question,
-      selectedStrategy.value,
+      normalizeVisibleStrategy(selectedStrategy.value),
       20,
       apiChatHistory,
       currentSessionId.value,
@@ -910,7 +903,9 @@ async function handleSend() {
     const lastMessage = messages.value[messages.value.length - 1];
     if (lastMessage && lastMessage.role === 'assistant') {
       lastMessage.loading = false;
-      lastMessage.strategy = searchResult.strategy_used || selectedStrategy.value;
+      lastMessage.strategy = normalizeVisibleStrategy(
+        searchResult.strategy_used || selectedStrategy.value,
+      );
       const apiEntities = searchResult.local_result?.entities || [];
       const apiRelations = searchResult.local_result?.relations || [];
 
@@ -1032,40 +1027,6 @@ function handleHighlightEntities(entities: EntityInfo[]) {
   emit('highlightEntities', entities);
 }
 
-function triggerDemoHighlight() {
-  const latestUserQuestion = [...messages.value].reverse().find((msg) => msg.role === 'user')?.content || '';
-  const question = latestUserQuestion || inputText.value.trim() || '知识图谱问答演示';
-  const demoEntities = buildDemoEntitiesByQuestion(question);
-
-  emit('highlight-knowledge', {
-    entities: demoEntities,
-    relations: [],
-    question,
-  });
-
-  // Emit kg-highlight for explain view as well during demo
-  const graphNodes = demoEntities.map(e => ({
-    id: e.name,
-    label: e.name,
-    ...e,
-    value: 1
-  }));
-
-  emit('kg-highlight', {
-    seedNodeIds: graphNodes.map(n => n.id),
-    nodeIds: graphNodes.map(n => n.id),
-    linkIds: [],
-    maxDepth: 1,
-    graph: {
-      nodes: graphNodes,
-      edges: [],
-      links: []
-    }
-  });
-
-  ElMessage.success('已触发演示点亮，可观察节点按层级逐步出现');
-}
-
 // 清空对话（含上下文）
 function clearMessages() {
   messages.value = [];
@@ -1085,13 +1046,11 @@ function handleKeydown(event: KeyboardEvent | Event) {
 
 // 获取策略标签颜色
 function getStrategyColorClass(strategy: SearchStrategy | undefined): string {
-  switch (strategy) {
+  switch (normalizeVisibleStrategy(strategy)) {
     case 'local':
       return 'text-green-400';
     case 'global':
       return 'text-yellow-400';
-    case 'both':
-      return 'text-cyan-400';
     default:
       return 'text-gray-400';
   }
@@ -1099,13 +1058,11 @@ function getStrategyColorClass(strategy: SearchStrategy | undefined): string {
 
 // 获取策略显示名称
 function getStrategyLabel(strategy: SearchStrategy | undefined): string {
-  switch (strategy) {
+  switch (normalizeVisibleStrategy(strategy)) {
     case 'local':
       return 'Local';
     case 'global':
       return 'Global';
-    case 'both':
-      return 'Hybrid';
     case 'auto':
       return 'Auto';
     default:

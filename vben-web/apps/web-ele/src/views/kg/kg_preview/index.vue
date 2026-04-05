@@ -1,13 +1,13 @@
 <script lang="ts" setup>
 import { onMounted, reactive, ref } from 'vue';
-import { ElButton, ElTooltip } from 'element-plus';
-import { ChatDotRound, Operation } from '@element-plus/icons-vue';
+import { ElButton, ElIcon, ElOption, ElSelect, ElTooltip } from 'element-plus';
+import { ChatDotRound, Document, Operation } from '@element-plus/icons-vue';
 
 import KgChatWindow from './components/KgChatWindow.vue';
 import Graph from './graph.vue';
 import Parameter from './parameter.vue';
+import { getNeo4jDatabases } from './utils/api';
 import type { EntityInfo } from './utils/api';
-import { baseRequestClient } from '#/api/request';
 
 interface KgHighlightPayload {
   seedNodeIds: string[];
@@ -50,21 +50,39 @@ const graphRef = ref<GraphExpose>();
 const showChat = ref(true);
 const showParam = ref(true);
 const chatPanelWidth = ref(430);
+const loadingDatabases = ref(false);
+const databaseOptions = ref<Array<{ label: string; value: string }>>([]);
+
+function sanitizeDatabaseName(value?: string) {
+  const normalized = value?.trim() || '';
+  return normalized.toLowerCase() === 'system' ? '' : normalized;
+}
+
+function ensureSelectedDatabaseValid() {
+  const selected = sanitizeDatabaseName(params.selectedDatabase);
+  const allowed = new Set(databaseOptions.value.map((option) => option.value));
+  params.selectedDatabase = allowed.has(selected) ? selected : databaseOptions.value[0]?.value || '';
+}
+
+async function fetchDatabases() {
+  loadingDatabases.value = true;
+  try {
+    const databases = await getNeo4jDatabases();
+    databaseOptions.value = databases.map((db) => ({
+      label: db.name,
+      value: db.name,
+    }));
+    ensureSelectedDatabaseValid();
+  } catch {
+    databaseOptions.value = [];
+    params.selectedDatabase = '';
+  } finally {
+    loadingDatabases.value = false;
+  }
+}
 
 onMounted(async () => {
-  try {
-    const res = await baseRequestClient.get<any>('/kg/databases');
-    const dbs: Array<{ name: string; default: boolean }> =
-      res?.data?.data?.databases || res?.data?.databases || [];
-    const pick =
-      dbs.find((d) => !d.default && d.name !== 'system') ||
-      dbs.find((d) => d.name !== 'system');
-    if (pick && !params.selectedDatabase) {
-      params.selectedDatabase = pick.name;
-    }
-  } catch {
-    // 保持默认空字符串
-  }
+  await fetchDatabases();
 });
 
 const handleParamUpdate = (newParams: typeof params) => {
@@ -349,7 +367,31 @@ const handleKgHighlight = (payload: KgHighlightPayload) => {
         :node-style="params.nodeStyle"
       />
 
-      <div v-if="!showParam" class="absolute left-4 top-4 z-10">
+      <div v-if="!showParam" class="absolute left-4 top-4 z-[200]">
+        <div class="w-60 rounded-xl border border-cyan-500/20 bg-slate-950/78 p-3 shadow-2xl shadow-black/30 backdrop-blur-md">
+          <div class="mb-2 flex items-center gap-2 text-[11px] font-medium uppercase tracking-[0.2em] text-cyan-300/85">
+            <el-icon class="text-sm"><Document /></el-icon>
+            <span>数据库</span>
+          </div>
+          <ElSelect
+            v-model="params.selectedDatabase"
+            class="w-full"
+            placeholder="选择数据库"
+            popper-class="doc-select-dropdown"
+            :loading="loadingDatabases"
+            :teleported="true"
+          >
+            <ElOption
+              v-for="database in databaseOptions"
+              :key="database.value"
+              :label="database.label"
+              :value="database.value"
+            />
+          </ElSelect>
+        </div>
+      </div>
+
+      <div v-if="!showParam" class="absolute left-4 top-24 z-50">
         <ElTooltip content="显示控制面板" placement="right">
           <ElButton
             type="info"

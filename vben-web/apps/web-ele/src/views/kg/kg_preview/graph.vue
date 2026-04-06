@@ -169,6 +169,7 @@ const highlightedLinkIds = shallowRef<Set<string>>(new Set());
 const hoveredNodeIds = shallowRef<Set<string>>(new Set());
 const hoveredLinkIds = shallowRef<Set<string>>(new Set());
 const hoveredCenterNodeId = ref('');
+const selectedNode = ref<GraphNode | null>(null);
 const focusedNodeIds = shallowRef<Set<string>>(new Set());
 const focusedLinkIds = shallowRef<Set<string>>(new Set());
 const focusedSeedNodeIds = shallowRef<Set<string>>(new Set());
@@ -853,25 +854,31 @@ function applyNodeInteractiveState(object3d: any, node: GraphNode) {
   const nodeId = String(node.id ?? '');
   const isNeighborHighlighted = activeNodeIds.has(nodeId);
 
-  // 非高亮节点保持原样，不做任何暗化或缩�?
-  if (!isNeighborHighlighted) return object3d;
-
-  const isHoverCenter = isHoverHighlightActive.value && hoveredCenterNodeId.value === nodeId;
-  const scaleMultiplier = isHoverCenter ? 1.12 : 1.04;
-  const emphasisMultiplier = isHoverCenter ? 1.45 : 1.08;
-
-  object3d.scale.multiplyScalar(scaleMultiplier);
-  object3d.traverse?.((child: any) => {
-    if (!child?.material) return;
-    if (Array.isArray(child.material)) {
-      child.material = child.material.map((material: any) =>
-        applyMaterialOpacity(material, 1, emphasisMultiplier),
-      );
-      return;
+  if (!isNeighborHighlighted) {
+    // 非相邻节点：完全隐藏（透明度设为 0）
+    object3d.traverse?.((child: any) => {
+      if (!child?.material) return;
+      const hideMat = (mat: any) => {
+        const m = mat.clone ? mat.clone() : mat;
+        m.opacity = 0;
+        m.transparent = true;
+        return m;
+      };
+      if (Array.isArray(child.material)) {
+        child.material = child.material.map(hideMat);
+      } else {
+        child.material = hideMat(child.material);
+      }
+    });
+    // 隐藏 SpriteText 等文字标签
+    if (object3d.material) {
+      object3d.material.opacity = 0;
+      object3d.material.transparent = true;
     }
-    child.material = applyMaterialOpacity(child.material, 1, emphasisMultiplier);
-  });
+    return object3d;
+  }
 
+  // 相邻节点：保持默认外观不变，不做任何放大或增亮
   return object3d;
 }
 
@@ -892,7 +899,7 @@ function getLinkColor(link: GraphEdge): string {
 
   if (!sourceHighlighted || !targetHighlighted) {
     // 高亮时，非路径区域连线不再完全隐藏，保留弱可见背景，避免“线消失”错�?
-    return 'rgba(102,128,255,0.35)';
+    return 'rgba(0,0,0,0)';
   }
 
   const linkKey = `${sourceId}-${targetId}`;
@@ -903,7 +910,7 @@ function getLinkColor(link: GraphEdge): string {
 
   // 路径上的边保持弱可见，叠�?pipe 动画后更接近 explain 的逐步显现
   if (isHoverHighlightActive.value) {
-    return isHighlighted ? 'rgba(94,234,212,0.92)' : 'rgba(94,234,212,0.28)';
+    return 'rgba(102,128,255,0.6)';
   }
   return isHighlighted ? 'rgba(102,128,255,0.2)' : 'rgba(102,128,255,0.1)';
 }
@@ -923,7 +930,7 @@ function getLinkWidth(link: GraphEdge): number {
   const sourceHighlighted = activeNodeIds.has(sourceId);
   const targetHighlighted = activeNodeIds.has(targetId);
   if (!sourceHighlighted || !targetHighlighted) {
-    return baseWidth * 0.25;
+    return 0;
   }
 
   const linkKey = `${sourceId}-${targetId}`;
@@ -932,7 +939,7 @@ function getLinkWidth(link: GraphEdge): number {
     activeLinkIds.has(linkKey) ||
     activeLinkIds.has(linkKeyReverse);
   if (isHoverHighlightActive.value) {
-    return isHighlighted ? baseWidth * 2.8 : baseWidth * 1.1;
+    return baseWidth;
   }
   return isHighlighted ? baseWidth * 2.5 : baseWidth * 0.5;
 }
@@ -1055,6 +1062,7 @@ function handleNodeActivate(node: null | NodeObject) {
   if (!hoveredId) {
     if (!isHoverHighlightActive.value) return;
     clearHoverHighlight();
+    selectedNode.value = null;
     refreshNodeAppearance();
     applyLinkStyles();
     return;
@@ -1062,6 +1070,7 @@ function handleNodeActivate(node: null | NodeObject) {
 
   if (hoveredCenterNodeId.value === hoveredId) {
     clearHoverHighlight();
+    selectedNode.value = null;
     refreshNodeAppearance();
     applyLinkStyles();
     return;
@@ -1071,6 +1080,9 @@ function handleNodeActivate(node: null | NodeObject) {
   hoveredCenterNodeId.value = hoveredId;
   hoveredNodeIds.value = nextNodeIds;
   hoveredLinkIds.value = nextLinkIds;
+  // 找到完整节点数据
+  const sourceGraph = focusedGraphData.value ?? filteredGraph.value;
+  selectedNode.value = sourceGraph.nodes.find((n: GraphNode) => String(n.id) === hoveredId) ?? null;
 
   refreshNodeAppearance();
   applyLinkStyles();
@@ -1177,7 +1189,17 @@ function applyLinkStyles() {
   graphInstance.linkOpacity(isHighlightActive.value ? 0.28 : 0.45);
   graphInstance.linkWidth((link) => getLinkWidth(link as GraphEdge));
   graphInstance.linkColor((link) => getLinkColor(link as GraphEdge));
-  graphInstance.linkDirectionalParticles(props.showEdges ? 2 : 0);
+  graphInstance.linkDirectionalParticles((link) => {
+    if (!props.showEdges) return 0;
+    if (isHighlightActive.value) {
+      // 高亮模式：只给相邻连线显示粒子
+      const activeNodeIds = getActiveHighlightedNodeIds();
+      const sourceId = typeof (link as any).source === 'object' ? (link as any).source?.id : (link as any).source;
+      const targetId = typeof (link as any).target === 'object' ? (link as any).target?.id : (link as any).target;
+      if (!activeNodeIds.has(String(sourceId)) || !activeNodeIds.has(String(targetId))) return 0;
+    }
+    return 2;
+  });
   graphInstance.linkDirectionalParticleWidth(2.4);
   graphInstance.linkDirectionalParticleSpeed(() => 0.0035);
   graphInstance.linkDirectionalParticleColor(() => '#4ecdc4');
@@ -1259,6 +1281,8 @@ function initForceGraph() {
     })
     .onBackgroundClick(() => {
       // 点击背景取消高亮
+      clearHoverHighlight();
+      selectedNode.value = null;
       clearHighlight();
     });
 
@@ -1628,6 +1652,27 @@ defineExpose({
       </div>
     </Transition>
 
+    <!-- Selected Node Card -->
+    <Transition name="slide-up">
+      <div
+        v-if="selectedNode"
+        class="absolute bottom-5 left-5 z-30 min-w-[220px] max-w-[320px] rounded-xl border border-cyan-500/30 bg-[#0b1a2e]/90 px-5 py-4 shadow-[0_0_24px_rgba(34,211,238,0.15)] backdrop-blur-md"
+      >
+        <div class="mb-2 flex items-center justify-between">
+          <span class="text-xs font-semibold uppercase tracking-widest text-cyan-400">选中节点</span>
+          <button
+            class="text-slate-500 transition hover:text-cyan-300"
+            @click="selectedNode = null"
+          >✕</button>
+        </div>
+        <div class="mb-1 truncate text-base font-bold text-white">{{ selectedNode.label || selectedNode.id }}</div>
+        <div v-if="selectedNode.category" class="mb-2 inline-block rounded-full bg-cyan-900/60 px-2 py-0.5 text-xs text-cyan-300">{{ selectedNode.category }}</div>
+        <div class="mt-1 text-xs text-slate-400">
+          相邻节点数：<span class="text-cyan-200 font-medium">{{ hoveredNodeIds.size > 1 ? hoveredNodeIds.size - 1 : 0 }}</span>
+        </div>
+      </div>
+    </Transition>
+
     <Transition name="fade">
       <div
         v-if="isGraphEmpty"
@@ -1663,6 +1708,17 @@ defineExpose({
 .fade-enter-from,
 .fade-leave-to {
   opacity: 0;
+}
+
+.slide-up-enter-active,
+.slide-up-leave-active {
+  transition: opacity 0.25s ease, transform 0.25s ease;
+}
+
+.slide-up-enter-from,
+.slide-up-leave-to {
+  opacity: 0;
+  transform: translateY(12px);
 }
 
 /* Tech Spinner Styles */

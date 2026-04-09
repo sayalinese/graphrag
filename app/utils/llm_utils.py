@@ -220,7 +220,19 @@ RIVAL_OF（对手）、CREATED_BY（创造）、HAS_ABILITY（拥有能力）等
             logger.error(f"关系提取失败: {e}")
             return []
     
-    def generate_answer(self, query: str, context: str) -> str:
+    def _build_answer_system_prompt(self, system_prompt: str = None) -> str:
+        default_system = (
+            "你是一个有帮助的助手。根据提供的上下文信息，用准确、清晰的语言回答用户的问题。"
+            "如果上下文中没有相关信息，请说明。\n\n"
+            "【输出格式要求】\n"
+            "- 当回答包含多项并列内容（如症状、药物、食物建议等），请使用 Markdown 表格而非无序列表或逗号拼接。\n"
+            "- 若同时存在两个对立类别（如宜食 / 忌食、推荐 / 不推荐），将两列合并为一张表，列名分别标注类别。\n"
+            "- 若只有单一类别的多项内容，使用单列表格（表头为类别名称，每行一项）。\n"
+            "- 其他说明性文字正常输出，无需强制表格化。"
+        )
+        return f"{system_prompt}\n\n{default_system}" if system_prompt else default_system
+
+    def generate_answer(self, query: str, context: str, system_prompt: str = None) -> str:
         """
         基于上下文生成答案
         
@@ -232,31 +244,25 @@ RIVAL_OF（对手）、CREATED_BY（创造）、HAS_ABILITY（拥有能力）等
             生成的答案
         """
         try:
-            prompt = ChatPromptTemplate.from_messages([
-                ("system", """你是一个有帮助的助手。
-根据提供的上下文信息，用准确、清晰的语言回答用户的问题。
-如果上下文中没有相关信息，请说明。"""),
-                ("user", f"""上下文信息：
-{context}
+            from langchain_core.messages import HumanMessage, SystemMessage
 
-用户问题：
-{query}""")
-            ])
-            
-            chain = prompt | self.llm
-            response = chain.invoke({})
-            
+            messages = [
+                SystemMessage(content=self._build_answer_system_prompt(system_prompt)),
+                HumanMessage(content=f"上下文信息：\n{context}\n\n用户问题：\n{query}"),
+            ]
+            response = self.llm.invoke(messages)
+
             return response.content
         except Exception as e:
             logger.error(f"答案生成失败: {e}")
             return "抱歉，生成答案时出错。"
 
-    def generate_answer_stream(self, query: str, context: str) -> Generator[str, None, None]:
+    def generate_answer_stream(self, query: str, context: str, system_prompt: str = None) -> Generator[str, None, None]:
         """基于上下文流式生成答案，逐 token 产出文本片段"""
         from langchain_core.messages import HumanMessage, SystemMessage
         try:
             messages = [
-                SystemMessage(content="你是一个有帮助的助手。根据提供的上下文信息，用准确、清晰的语言回答用户的问题。如果上下文中没有相关信息，请说明。"),
+                SystemMessage(content=self._build_answer_system_prompt(system_prompt)),
                 HumanMessage(content=f"上下文信息：\n{context}\n\n用户问题：\n{query}"),
             ]
             for chunk in self.llm.stream(messages):

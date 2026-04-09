@@ -98,7 +98,7 @@ const handleReset = () => {
 </script>
 
 <template>
-  <div class="relative h-[calc(100vh-80.2px)] overflow-hidden bg-[#0a0a0a]">
+  <div class="kg-preview-page relative h-[calc(100vh-80.2px)] overflow-hidden">
     <div class="absolute inset-0 min-w-0">
       <Graph
         ref="graphRef"
@@ -115,8 +115,8 @@ const handleReset = () => {
       />
 
       <div v-if="!showParam" class="absolute left-4 top-4 z-[200]">
-        <div class="w-60 rounded-xl border border-cyan-500/20 bg-slate-950/78 p-3 shadow-2xl shadow-black/30 backdrop-blur-md">
-          <div class="mb-2 flex items-center gap-2 text-[11px] font-medium uppercase tracking-[0.2em] text-cyan-300/85">
+        <div class="preview-db-card w-60 rounded-xl border p-3 backdrop-blur-md">
+          <div class="preview-db-card__label mb-2 flex items-center gap-2 text-[11px] font-medium uppercase tracking-[0.2em]">
             <el-icon class="text-sm"><Document /></el-icon>
             <span>数据库</span>
           </div>
@@ -144,7 +144,7 @@ const handleReset = () => {
             type="info"
             circle
             size="large"
-            class="!border-gray-700 !bg-gray-800/80 !text-gray-200 hover:!bg-gray-700 backdrop-blur-md shadow-lg"
+            class="preview-panel-toggle backdrop-blur-md"
             @click="showParam = true"
           >
             <el-icon class="text-xl"><Operation /></el-icon>
@@ -157,7 +157,7 @@ const handleReset = () => {
     <transition name="slide-left">
       <div
         v-show="showParam"
-        class="absolute bottom-0 left-0 top-0 z-20 h-full border-r border-gray-800/50 bg-transparent shadow-2xl"
+        class="preview-panel-shell absolute bottom-0 left-0 top-0 z-20 h-full border-r bg-transparent shadow-2xl"
       >
         <Parameter
           :model-value="params"
@@ -174,6 +174,61 @@ const handleReset = () => {
 </template>
 
 <style scoped>
+:global(:root) {
+  --kgp-page-bg:
+    radial-gradient(circle at top left, rgba(59, 130, 246, 0.06), transparent 24%),
+    linear-gradient(180deg, #f7f8fa, #eef2f7 72%);
+  --kgp-float-bg: rgba(255, 255, 255, 0.84);
+  --kgp-float-border: rgba(148, 163, 184, 0.25);
+  --kgp-float-shadow: 0 18px 40px rgba(15, 23, 42, 0.12);
+  --kgp-float-label: #475569;
+  --kgp-toggle-bg: rgba(255, 255, 255, 0.88);
+  --kgp-toggle-border: rgba(148, 163, 184, 0.24);
+  --kgp-toggle-text: #334155;
+  --kgp-panel-border: rgba(148, 163, 184, 0.2);
+}
+
+:global(.dark) {
+  --kgp-page-bg: #0a0a0a;
+  --kgp-float-bg: rgba(2, 6, 23, 0.78);
+  --kgp-float-border: rgba(6, 182, 212, 0.2);
+  --kgp-float-shadow: 0 18px 40px rgba(0, 0, 0, 0.28);
+  --kgp-float-label: rgba(103, 232, 249, 0.85);
+  --kgp-toggle-bg: rgba(31, 41, 55, 0.8);
+  --kgp-toggle-border: rgba(55, 65, 81, 0.9);
+  --kgp-toggle-text: #e5e7eb;
+  --kgp-panel-border: rgba(31, 41, 55, 0.7);
+}
+
+.kg-preview-page {
+  background: var(--kgp-page-bg);
+}
+
+.preview-db-card {
+  background: var(--kgp-float-bg);
+  border-color: var(--kgp-float-border) !important;
+  box-shadow: var(--kgp-float-shadow);
+}
+
+.preview-db-card__label {
+  color: var(--kgp-float-label);
+}
+
+.preview-panel-toggle {
+  background: var(--kgp-toggle-bg) !important;
+  border-color: var(--kgp-toggle-border) !important;
+  color: var(--kgp-toggle-text) !important;
+  box-shadow: var(--kgp-float-shadow);
+}
+
+.preview-panel-toggle:hover {
+  opacity: 0.92;
+}
+
+.preview-panel-shell {
+  border-right-color: var(--kgp-panel-border) !important;
+}
+
 :deep(html),
 :deep(body) {
   margin: 0;

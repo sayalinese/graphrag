@@ -38,7 +38,7 @@ const routes: RouteRecordRaw[] = [
         path: 'explain',
         component: () => import('#/views/kg/kg_explain/index.vue'),
         meta: {
-          title: '可解释路径展示',
+          title: '医疗诊断',
           icon: 'mdi:graph-outline',
           keepAlive: true,
         },
@@ -60,6 +60,16 @@ const routes: RouteRecordRaw[] = [
         meta: {
           title: $t('page.kg.management'),
           icon: 'mdi:cog-outline',
+          keepAlive: true,
+        },
+      },
+      {
+        name: 'KgCharacter',
+        path: 'character',
+        component: () => import('#/views/kb/character/index.vue'),
+        meta: {
+          title: $t('page.kg.character'),
+          icon: 'lucide:users',
           keepAlive: true,
         },
       },

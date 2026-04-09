@@ -8,6 +8,7 @@ import uuid
 from flask import Blueprint, request, jsonify, current_app, Response, stream_with_context
 from app.services.rag_service import RAGService
 from app.services.neo.mapping_manager import MappingManager
+from app.services.doc_magene import DocumentManager
 from app.models import ChatSession, ChatMessage, Document, DocumentChunk, KnowledgeBase, User, UserSession
 from app.extensions import db
 from sqlalchemy import text
@@ -253,6 +254,68 @@ def _load_time_values(model, column_attr, start_dt: Optional[datetime] = None) -
     except Exception as exc:
         logger.warning(f"加载时序数据失败 {model.__name__}: {exc}")
         return []
+
+
+def _clip_text(value: Any, limit: int = 1600) -> str:
+    text = str(value or '').strip()
+    if not text:
+        return ''
+
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    if len(text) <= limit:
+        return text
+    return text[: max(limit - 3, 0)].rstrip() + '...'
+
+
+def _summarize_preview_chunks(chunks: List[Dict[str, Any]], limit: int = 1600) -> str:
+    fragments: List[str] = []
+    total = 0
+
+    for chunk in (chunks or [])[:6]:
+        content = _clip_text((chunk or {}).get('content') or '', 420)
+        if not content:
+            continue
+
+        if fragments and total + len(content) > limit:
+            break
+
+        fragments.append(content)
+        total += len(content)
+
+    return _clip_text('\n\n'.join(fragments), limit)
+
+
+def _sanitize_patient_intake_payload(payload: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(payload, dict):
+        return None
+
+    source_label = _clip_text(payload.get('source_label') or '患者定位问诊', 40)
+    structured_summary = _clip_text(payload.get('structured_summary') or '', 4000)
+    question_prompt = _clip_text(payload.get('question_prompt') or '', 6000)
+
+    attachment_summaries: List[Dict[str, Any]] = []
+    for item in payload.get('attachment_summaries') or []:
+        if not isinstance(item, dict):
+            continue
+        attachment_summaries.append({
+            'filename': _clip_text(item.get('filename') or '', 200),
+            'category': 'image' if str(item.get('category') or '').lower() == 'image' else 'document',
+            'parser': _clip_text(item.get('parser') or '', 80),
+            'summary': _clip_text(item.get('summary') or '', 1200),
+            'parsed_text': _clip_text(item.get('parsed_text') or '', 1600),
+            'degraded': bool(item.get('degraded')),
+            'error': _clip_text(item.get('error') or '', 300),
+        })
+
+    if not structured_summary and not question_prompt and not attachment_summaries:
+        return None
+
+    return {
+        'source_label': source_label,
+        'structured_summary': structured_summary,
+        'question_prompt': question_prompt,
+        'attachment_summaries': attachment_summaries,
+    }
 
 
 
@@ -1366,6 +1429,111 @@ def find_paths():
 
 # ==================== 文档入库 ====================
 
+@kg_bp.route('/patient_intake/parse', methods=['POST'])
+def parse_patient_intake_attachment():
+    """解析医疗诊断问诊弹窗中的单个附件，返回可用于问答的摘要。"""
+    file_path = None
+    original_filename = ''
+    category = 'document'
+    mime_type = ''
+    size = 0
+
+    try:
+        if 'file' not in request.files:
+            return jsonify({"success": False, "error": "没有上传文件"}), 400
+
+        file = request.files['file']
+        if not file or not file.filename:
+            return jsonify({"success": False, "error": "文件名不能为空"}), 400
+
+        original_filename = file.filename
+        mime_type = (file.mimetype or '').lower()
+        file_ext = os.path.splitext(original_filename)[1].lower()
+        image_exts = {'.png', '.jpg', '.jpeg', '.webp', '.bmp', '.gif'}
+        category = 'image' if mime_type.startswith('image/') or file_ext in image_exts else 'document'
+
+        upload_root = current_app.config.get('UPLOAD_FOLDER', 'uploads/temp')
+        temp_dir = os.path.join(upload_root, 'patient_intake')
+        os.makedirs(temp_dir, exist_ok=True)
+
+        temp_filename = f"{uuid.uuid4()}{file_ext}"
+        file_path = os.path.join(temp_dir, temp_filename)
+        file.save(file_path)
+        size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
+
+        if category == 'image':
+            summary = (
+                f"已上传图片附件《{original_filename}》。当前环境未启用图片 OCR / 视觉解析，"
+                "本轮问答将结合附件类型和用户补充说明使用该材料。"
+            )
+            return jsonify({
+                "success": True,
+                "data": {
+                    "filename": original_filename,
+                    "size": size,
+                    "category": category,
+                    "content_type": mime_type,
+                    "parser": "image-metadata",
+                    "summary": summary,
+                    "parsed_text": "",
+                    "degraded": True,
+                },
+            })
+
+        manager = DocumentManager()
+        chunks = manager.preview_split(
+            file_path=file_path,
+            split_mode='smart',
+            chunk_size=700,
+            overlap=80,
+        )
+        parsed_text = _summarize_preview_chunks(chunks, limit=1600)
+
+        if parsed_text:
+            summary = f"已解析文档《{original_filename}》，抽取到如下关键信息：\n{parsed_text}"
+            degraded = False
+        else:
+            summary = f"已上传文档《{original_filename}》，但暂未提取到足够的可读文本，可在补充说明中描述关键结果。"
+            degraded = True
+
+        return jsonify({
+            "success": True,
+            "data": {
+                "filename": original_filename,
+                "size": size,
+                "category": category,
+                "content_type": mime_type,
+                "parser": "document-preview",
+                "summary": summary,
+                "parsed_text": parsed_text,
+                "degraded": degraded,
+            },
+        })
+    except Exception as e:
+        logger.warning(f"患者问诊附件解析失败: {e}")
+        fallback_name = original_filename or '未命名附件'
+        fallback_summary = f"附件《{fallback_name}》解析失败，本轮问答将仅保留附件元信息。"
+        return jsonify({
+            "success": True,
+            "data": {
+                "filename": fallback_name,
+                "size": size,
+                "category": category,
+                "content_type": mime_type,
+                "parser": "fallback",
+                "summary": fallback_summary,
+                "parsed_text": "",
+                "degraded": True,
+                "error": str(e),
+            },
+        })
+    finally:
+        if file_path and os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+            except Exception:
+                pass
+
 @kg_bp.route('/upload', methods=['POST'])
 def upload_document():
     """上传文档并构建知识图谱（含向量化）
@@ -2462,11 +2630,26 @@ def graphrag_hybrid_search_stream():
     try:
         data = request.json or {}
         question = data.get('question') or data.get('q') or ''
+        display_question = data.get('display_question') or question
         top_k = int(data.get('top_k', 5))
         strategy = data.get('strategy', 'auto')
+        expert_mode = data.get('expert_mode', 'standard')
         chat_history = data.get('chat_history', [])
         session_id = data.get('session_id')
         doc_id = data.get('doc_id')
+        character_key = data.get('character_key')
+        patient_intake = _sanitize_patient_intake_payload(data.get('patient_intake'))
+
+        # 查找角色 system_prompt
+        character_system_prompt = None
+        if character_key:
+            try:
+                from app.models.character import Character
+                char = Character.query.filter_by(key=character_key, is_active=True).first()
+                if char and char.system_prompt:
+                    character_system_prompt = char.system_prompt
+            except Exception as e:
+                logger.warning(f"Failed to load character '{character_key}': {e}")
         try:
             database = _require_graph_database(data.get('database'))
         except ValueError as exc:
@@ -2491,10 +2674,12 @@ def graphrag_hybrid_search_stream():
                 from datetime import datetime, timezone
                 session = ChatSession.query.filter_by(session_id=session_id).first()
                 if session:
+                    user_sources = {'patient_intake': patient_intake} if patient_intake else None
                     user_msg = ChatMessage(
                         session_id=session_id,
                         role='user',
-                        content=question,
+                        content=display_question,
+                        sources=user_sources,
                         timestamp=datetime.now(timezone.utc)
                     )
                     db.session.add(user_msg)
@@ -2503,6 +2688,9 @@ def graphrag_hybrid_search_stream():
             except Exception as e:
                 db.session.rollback()
                 logger.error(f"保存用户消息失败: {e}")
+            finally:
+                # 释放数据库连接到连接池，避免长时间持有导致开多个网页时请求阻塞！
+                db.session.remove()
 
         def _generate():
             answer_parts = []
@@ -2516,6 +2704,8 @@ def graphrag_hybrid_search_stream():
                         chat_history=chat_history,
                         doc_id=doc_id,
                         database=database,
+                        system_prompt=character_system_prompt,
+                        expert_mode=expert_mode,
                     ):
                         # 收集 token 以便事后入库
                         try:
@@ -2539,12 +2729,16 @@ def graphrag_hybrid_search_stream():
                     session = ChatSession.query.filter_by(session_id=session_id).first()
                     if session:
                         full_answer = ''.join(answer_parts)
-                        sources = {'local': metadata_snapshot} if metadata_snapshot else None
+                        sources = {}
+                        if metadata_snapshot:
+                            sources['local'] = metadata_snapshot
+                        if patient_intake:
+                            sources['patient_intake'] = patient_intake
                         ai_msg = ChatMessage(
                             session_id=session_id,
                             role='assistant',
                             content=full_answer,
-                            sources=sources,
+                            sources=sources or None,
                             timestamp=datetime.now(timezone.utc)
                         )
                         db.session.add(ai_msg)
@@ -2553,6 +2747,8 @@ def graphrag_hybrid_search_stream():
                 except Exception as e:
                     db.session.rollback()
                     logger.error(f"保存 AI 消息失败: {e}")
+                finally:
+                    db.session.remove()
 
         return Response(
             stream_with_context(_generate()),

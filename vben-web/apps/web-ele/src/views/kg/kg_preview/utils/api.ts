@@ -76,20 +76,74 @@ export interface HybridSearchResult {
 }
 
 // 閼卞﹤銇夊☉鍫熶紖
+// 追问问题结构
+export interface FollowUpQuestion {
+  key: string;
+  label: string;
+  type: 'input' | 'textarea' | 'select';
+  options?: string[];
+}
+
 export interface KgChatMessage {
   id: string;
   role: 'user' | 'assistant';
   content: string;
   timestamp: Date;
+  apiContent?: string;
   // 闂勫嫬濮炴穱鈩冧紖閿涘牅绮?assistant 濞戝牊浼呴敍?
   strategy?: SearchStrategy;
   entities?: EntityInfo[];
   relations?: RelationInfo[];
   chunks?: ChunkInfo[];
   communities_used?: number;
+  expertStages?: ExpertStageState[];
+  followUpQuestions?: FollowUpQuestion[];
   loading?: boolean;
   loadingText?: string;
   error?: string;
+  sources?: Record<string, any>;
+  sourceLabel?: string;
+  patientIntake?: PatientIntakeStreamPayload;
+  isWelcome?: boolean;
+}
+
+export type ExpertStageStatus = 'pending' | 'running' | 'done' | 'error';
+
+export interface ExpertStageState {
+  key: string;
+  title: string;
+  status: ExpertStageStatus;
+  detail?: string;
+}
+
+export interface PatientIntakeAttachmentSummary {
+  filename: string;
+  category: 'document' | 'image';
+  content_type?: string;
+  parser: string;
+  summary: string;
+  parsed_text?: string;
+  degraded?: boolean;
+  error?: string;
+}
+
+export interface PatientIntakeStreamPayload {
+  source_label: string;
+  structured_summary: string;
+  question_prompt?: string;
+  attachment_summaries?: PatientIntakeAttachmentSummary[];
+}
+
+export interface PatientIntakeSubmitPayload {
+  sourceLabel: string;
+  structuredSummary: string;
+  questionPrompt: string;
+  displayQuestion: string;
+  attachmentSummaries: PatientIntakeAttachmentSummary[];
+}
+
+export interface PatientIntakeAttachmentParseResult extends PatientIntakeAttachmentSummary {
+  size: number;
 }
 
 // 鐎电鐦介崢鍡楀蕉閿涘牏鏁ゆ禍?API 鐠囬攱鐪伴敍?
@@ -121,6 +175,7 @@ export interface KgSessionMessage {
   sources?: {
     local?: LocalSearchResult;
     global?: GlobalSearchResult;
+    patient_intake?: PatientIntakeStreamPayload;
   };
 }
 
@@ -185,10 +240,27 @@ export interface StreamMetadataEvent {
   communities_used: number;
   evidence: Record<string, any>;
 }
+export interface StreamExpertStageEvent {
+  type: 'expert_stage';
+  stage_key: string;
+  title: string;
+  status: ExpertStageStatus;
+  detail?: string;
+}
 export interface StreamTokenEvent { type: 'token'; token: string }
+export interface StreamFollowUpQuestionsEvent {
+  type: 'follow_up_questions';
+  questions: FollowUpQuestion[];
+}
 export interface StreamDoneEvent { type: 'done' }
 export interface StreamErrorEvent { type: 'error'; error: string }
-export type StreamEvent = StreamMetadataEvent | StreamTokenEvent | StreamDoneEvent | StreamErrorEvent;
+export type StreamEvent =
+  | StreamMetadataEvent
+  | StreamExpertStageEvent
+  | StreamTokenEvent
+  | StreamFollowUpQuestionsEvent
+  | StreamDoneEvent
+  | StreamErrorEvent;
 
 /**
  * GraphRAG 流式混合搜索 - 使用 SSE 实时返回 LLM 生成内容
@@ -206,7 +278,9 @@ export async function hybridSearchStream(
   chatHistory: ChatHistoryItem[] = [],
   callbacks: {
     onMetadata?: (meta: StreamMetadataEvent) => void;
+    onExpertStage?: (event: StreamExpertStageEvent) => void;
     onToken?: (token: string) => void;
+    onFollowUpQuestions?: (questions: FollowUpQuestion[]) => void;
     onDone?: () => void;
     onError?: (err: string) => void;
   },
@@ -214,22 +288,32 @@ export async function hybridSearchStream(
   docId?: string,
   database?: string,
   signal?: AbortSignal,
+  characterKey?: string,
+  expertMode: 'standard' | 'multi' = 'standard',
+  displayQuestion?: string,
+  patientIntake?: PatientIntakeStreamPayload,
 ): Promise<void> {
   const apiBase = (import.meta.env.VITE_GLOB_API_URL as string) || '/api';
   const url = `${apiBase}/kg/graphrag/hybrid_search/stream`;
 
+  const body: Record<string, any> = {
+    question,
+    strategy,
+    top_k: topK,
+    chat_history: chatHistory,
+    session_id: sessionId,
+    doc_id: docId,
+    database,
+  };
+  if (characterKey) body.character_key = characterKey;
+  if (expertMode) body.expert_mode = expertMode;
+  if (displayQuestion) body.display_question = displayQuestion;
+  if (patientIntake) body.patient_intake = patientIntake;
+
   const response = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      question,
-      strategy,
-      top_k: topK,
-      chat_history: chatHistory,
-      session_id: sessionId,
-      doc_id: docId,
-      database,
-    }),
+    body: JSON.stringify(body),
     signal,
   });
 
@@ -264,8 +348,12 @@ export async function hybridSearchStream(
       }
       if (event.type === 'metadata') {
         callbacks.onMetadata?.(event);
+      } else if (event.type === 'expert_stage') {
+        callbacks.onExpertStage?.(event);
       } else if (event.type === 'token') {
         callbacks.onToken?.(event.token);
+      } else if (event.type === 'follow_up_questions') {
+        callbacks.onFollowUpQuestions?.(event.questions);
       } else if (event.type === 'done') {
         callbacks.onDone?.();
         return;
@@ -276,6 +364,36 @@ export async function hybridSearchStream(
     }
   }
   callbacks.onDone?.();
+}
+
+export async function parsePatientIntakeAttachment(
+  file: File,
+): Promise<PatientIntakeAttachmentParseResult> {
+  const formData = new FormData();
+  formData.append('file', file);
+
+  const axiosResponse = await baseRequestClient.post<ApiResponse<PatientIntakeAttachmentParseResult>>(
+    '/kg/patient_intake/parse',
+    formData,
+    {
+      transformRequest: [
+        (data, headers) => {
+          if (headers) {
+            delete (headers as any)['Content-Type'];
+            delete (headers as any)['content-type'];
+          }
+          return data;
+        },
+      ],
+      timeout: 120000,
+    },
+  );
+
+  const response = axiosResponse.data as unknown as ApiResponse<PatientIntakeAttachmentParseResult>;
+  if (!response.success) {
+    throw new Error(response.error || '附件解析失败');
+  }
+  return response.data;
 }
 
 /**

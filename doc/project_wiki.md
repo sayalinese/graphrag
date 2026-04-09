@@ -584,3 +584,11 @@ server {
 *GraphRAG 详细流程图请参阅 [`doc/graphrag_flowchart.md`](doc/graphrag_flowchart.md)*
 *更多详细接口请参阅 `api_docs/` 目录下的 Markdown 文件*
 
+---
+
+## 10. 前端 UI 开发规范
+
+### 10.1 输入控件规范
+- **textarea 禁止拖拽缩放**：所有 `<ElInput type="textarea">` 或原生 `<textarea>` 必须设置 `resize: none`，禁止出现拖拽手柄。可通过 CSS `resize: none` 或 scoped 样式 `:deep(textarea) { resize: none; }` 实现。
+- **textarea 自适应高度**：优先使用 `:autosize="{ minRows: 1, maxRows: 4 }"` 替代固定行数，保持界面紧凑。
+

@@ -546,10 +546,10 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="h-[calc(100vh-78.2px)] flex bg-[#0a0a0a] text-gray-200 overflow-hidden">
+  <div class="kg-construct-page h-[calc(100vh-78.2px)] flex overflow-hidden">
     <!-- 左侧配置面板 -->
-    <div class="w-[360px] flex flex-col border-r border-gray-800 bg-gray-900/50 backdrop-blur-sm">
-      <div class="p-4 border-b border-gray-800">
+    <div class="construct-sidebar w-[360px] flex flex-col border-r backdrop-blur-sm">
+      <div class="construct-header p-4 border-b">
         <h2 class="text-lg font-semibold flex items-center gap-2">
           <el-icon class="text-cyan-400"><Cpu /></el-icon>
           构建控制台
@@ -560,17 +560,17 @@ onUnmounted(() => {
         <!-- 数据源选择 -->
         <div class="space-y-3">
           <label class="text-xs font-medium text-gray-500 uppercase">数据源</label>
-          <div class="bg-gray-800/50 p-1 rounded-lg flex gap-1">
+          <div class="construct-source-switch p-1 rounded-lg flex gap-1">
             <button 
-              class="flex-1 py-1.5 text-sm rounded-md transition-colors"
-              :class="activeTab === 'text' ? 'bg-gray-700 text-white shadow' : 'text-gray-400 hover:text-gray-300'"
+              class="construct-source-btn flex-1 py-1.5 text-sm rounded-md transition-colors"
+              :class="{ 'is-active': activeTab === 'text' }"
               @click="activeTab = 'text'"
             >
               文本输入
             </button>
             <button 
-              class="flex-1 py-1.5 text-sm rounded-md transition-colors"
-              :class="activeTab === 'file' ? 'bg-gray-700 text-white shadow' : 'text-gray-400 hover:text-gray-300'"
+              class="construct-source-btn flex-1 py-1.5 text-sm rounded-md transition-colors"
+              :class="{ 'is-active': activeTab === 'file' }"
               @click="activeTab = 'file'"
             >
               文件上传
@@ -609,7 +609,7 @@ onUnmounted(() => {
                 <span class="text-xs text-gray-600 font-mono">{{ form.text.length }}/5000</span>
               </div>
               
-              <div class="relative border border-gray-700 rounded-lg bg-gray-900/30 hover:border-gray-600 focus-within:border-cyan-500/50 focus-within:bg-gray-900/50 transition-all overflow-hidden group">
+              <div class="construct-text-shell relative border rounded-lg transition-all overflow-hidden group">
                 <el-input
                   v-model="form.text"
                   type="textarea"
@@ -648,7 +648,7 @@ onUnmounted(() => {
             </div>
 
             <!-- 文件上传区 -->
-            <div class="h-48 border-2 border-dashed border-gray-700 rounded-lg flex flex-col items-center justify-center text-gray-500 hover:border-cyan-500/50 hover:bg-gray-800/30 transition-colors">
+            <div class="construct-upload-zone h-48 border-2 border-dashed rounded-lg flex flex-col items-center justify-center transition-colors">
               <el-upload
                 class="w-full h-full flex flex-col items-center justify-center"
                 :auto-upload="false"
@@ -665,7 +665,7 @@ onUnmounted(() => {
           </div>
         </div>
 
-        <div class="space-y-3 pt-3 border-t border-gray-800">
+        <div class="construct-divider space-y-3 pt-3 border-t">
           <label class="text-xs font-medium text-gray-500 uppercase">目标数据库</label>
           <el-select
             v-model="selectedDatabase"
@@ -689,7 +689,7 @@ onUnmounted(() => {
           </label>
         </div>
 
-        <div class="space-y-3 pt-3 border-t border-gray-800">
+        <div class="construct-divider space-y-3 pt-3 border-t">
           <label class="text-xs font-medium text-gray-500 uppercase">一致性检测</label>
           <div class="flex items-center gap-3">
             <span class="inline-flex items-center gap-2 text-xs text-gray-300">
@@ -734,7 +734,7 @@ onUnmounted(() => {
 
 
         <!-- 高级配置 -->
-        <div class="space-y-4 pt-4 border-t border-gray-800">
+        <div class="construct-divider space-y-4 pt-4 border-t">
           <label class="text-xs font-medium text-gray-500 uppercase">切片策略</label>
           
           <div>
@@ -755,7 +755,7 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <div class="p-4 border-t border-gray-800 bg-gray-900/80">
+      <div class="construct-action-bar p-4 border-t">
         <el-button 
           type="primary" 
           class="w-full !h-9 !text-sm !bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 border-none" 
@@ -771,7 +771,7 @@ onUnmounted(() => {
     <!-- 右侧可视化与反馈 -->
     <div class="flex-1 flex flex-col min-w-0">
       <!-- 顶部状态栏 -->
-      <div class="h-16 border-b border-gray-800 flex items-center px-6 justify-between bg-gray-900/30">
+      <div class="construct-topbar h-16 border-b flex items-center px-6 justify-between">
         <el-steps :active="activeStep" finish-status="success" simple class="!bg-transparent flex-1 max-w-2xl">
           <el-step v-for="step in steps" :key="step.title" :title="step.title" />
         </el-steps>
@@ -797,15 +797,15 @@ onUnmounted(() => {
         <!-- 视图切换 Tabs -->
         <div class="absolute top-4 left-4 z-10 flex gap-2 items-center">
           <button 
-            class="px-3 py-1.5 rounded-md text-sm backdrop-blur-md border border-gray-700 transition-all"
-            :class="activeView === 'graph' ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/50' : 'bg-gray-900/50 text-gray-400 hover:bg-gray-800'"
+            class="construct-view-btn px-3 py-1.5 rounded-md text-sm backdrop-blur-md border transition-all"
+            :class="{ 'is-active': activeView === 'graph' }"
             @click="activeView = 'graph'"
           >
             <el-icon class="mr-1 align-text-bottom"><Connection /></el-icon> 图谱预览
           </button>
           <button 
-            class="px-3 py-1.5 rounded-md text-sm backdrop-blur-md border border-gray-700 transition-all"
-            :class="activeView === 'logs' ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/50' : 'bg-gray-900/50 text-gray-400 hover:bg-gray-800'"
+            class="construct-view-btn px-3 py-1.5 rounded-md text-sm backdrop-blur-md border transition-all"
+            :class="{ 'is-active': activeView === 'logs' }"
             @click="activeView = 'logs'"
           >
             <el-icon class="mr-1 align-text-bottom"><List /></el-icon> 执行日志
@@ -830,7 +830,7 @@ onUnmounted(() => {
           </el-select>
           
           <button 
-            class="px-3 py-1.5 rounded-md text-sm backdrop-blur-md border border-gray-700 transition-all hover:text-white"
+            class="construct-icon-btn px-3 py-1.5 rounded-md text-sm backdrop-blur-md border transition-all"
             @click="initGraph"
           >
             <el-icon><RefreshRight /></el-icon>
@@ -838,10 +838,10 @@ onUnmounted(() => {
         </div>
 
         <!-- Graph View -->
-        <div v-show="activeView === 'graph'" class="w-full h-full bg-gradient-to-b from-gray-900 to-black" ref="graphContainer"></div>
+        <div v-show="activeView === 'graph'" class="construct-graph-view w-full h-full" ref="graphContainer"></div>
 
         <!-- Logs View -->
-        <div v-show="activeView === 'logs'" class="w-full h-full bg-[#0c0c0c] p-6 overflow-y-auto font-mono text-sm">
+        <div v-show="activeView === 'logs'" class="construct-logs-view w-full h-full p-6 overflow-y-auto font-mono text-sm">
           <div v-if="logs.length === 0" class="h-full flex items-center justify-center text-gray-600">
             <div class="text-center">
               <el-icon class="text-4xl mb-2"><Monitor /></el-icon>
@@ -849,7 +849,7 @@ onUnmounted(() => {
             </div>
           </div>
           <div v-else class="space-y-2">
-            <div v-for="(log, i) in logs" :key="i" class="border-l-2 border-gray-800 pl-3 py-1 hover:bg-gray-900/50 transition-colors">
+            <div v-for="(log, i) in logs" :key="i" class="construct-log-row border-l-2 pl-3 py-1 transition-colors">
               <span class="text-gray-500 mr-2">{{ log.split(']')[0] }}]</span>
               <span :class="log.includes('错误') ? 'text-red-400' : 'text-gray-300'">{{ log.split(']')[1] }}</span>
             </div>
@@ -861,10 +861,166 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+:global(:root) {
+  --kgc-page-bg:
+    radial-gradient(circle at top left, rgba(59, 130, 246, 0.05), transparent 26%),
+    linear-gradient(180deg, #f7f8fa, #eef2f7 74%);
+  --kgc-sidebar-bg: rgba(255, 255, 255, 0.74);
+  --kgc-header-bg: rgba(248, 250, 252, 0.82);
+  --kgc-border: rgba(148, 163, 184, 0.22);
+  --kgc-border-soft: rgba(148, 163, 184, 0.28);
+  --kgc-text: #334155;
+  --kgc-muted: #64748b;
+  --kgc-switch-bg: rgba(226, 232, 240, 0.72);
+  --kgc-switch-active-bg: rgba(255, 255, 255, 0.94);
+  --kgc-switch-active-text: #0f172a;
+  --kgc-switch-shadow: 0 8px 18px rgba(15, 23, 42, 0.08);
+  --kgc-shell-bg: rgba(255, 255, 255, 0.72);
+  --kgc-shell-hover: rgba(255, 255, 255, 0.88);
+  --kgc-upload-bg: rgba(248, 250, 252, 0.68);
+  --kgc-upload-hover: rgba(239, 246, 255, 0.9);
+  --kgc-btn-bg: rgba(255, 255, 255, 0.8);
+  --kgc-btn-active-bg: rgba(14, 165, 233, 0.1);
+  --kgc-btn-active-border: rgba(14, 165, 233, 0.32);
+  --kgc-btn-active-text: #0369a1;
+  --kgc-graph-bg: linear-gradient(180deg, rgba(247, 249, 252, 0.96), rgba(239, 244, 250, 1));
+  --kgc-logs-bg: rgba(248, 250, 252, 0.94);
+  --kgc-log-hover: rgba(226, 232, 240, 0.58);
+  --kgc-input-bg: rgba(255, 255, 255, 0.86);
+  --kgc-input-border: rgba(148, 163, 184, 0.34);
+  --kgc-input-text: #334155;
+  --kgc-input-placeholder: #94a3b8;
+}
+
+:global(.dark) {
+  --kgc-page-bg: #0a0a0a;
+  --kgc-sidebar-bg: rgba(17, 24, 39, 0.5);
+  --kgc-header-bg: rgba(17, 24, 39, 0.7);
+  --kgc-border: rgba(31, 41, 55, 0.9);
+  --kgc-border-soft: rgba(75, 85, 99, 0.5);
+  --kgc-text: #e5e7eb;
+  --kgc-muted: #9ca3af;
+  --kgc-switch-bg: rgba(31, 41, 55, 0.5);
+  --kgc-switch-active-bg: rgba(55, 65, 81, 1);
+  --kgc-switch-active-text: #ffffff;
+  --kgc-switch-shadow: 0 8px 18px rgba(0, 0, 0, 0.2);
+  --kgc-shell-bg: rgba(17, 24, 39, 0.3);
+  --kgc-shell-hover: rgba(17, 24, 39, 0.5);
+  --kgc-upload-bg: rgba(31, 41, 55, 0.2);
+  --kgc-upload-hover: rgba(31, 41, 55, 0.3);
+  --kgc-btn-bg: rgba(17, 24, 39, 0.5);
+  --kgc-btn-active-bg: rgba(6, 182, 212, 0.2);
+  --kgc-btn-active-border: rgba(6, 182, 212, 0.5);
+  --kgc-btn-active-text: #67e8f9;
+  --kgc-graph-bg: linear-gradient(to bottom, rgb(17, 24, 39), rgb(0, 0, 0));
+  --kgc-logs-bg: #0c0c0c;
+  --kgc-log-hover: rgba(17, 24, 39, 0.5);
+  --kgc-input-bg: rgba(31, 41, 55, 0.5);
+  --kgc-input-border: rgba(75, 85, 99, 0.5);
+  --kgc-input-text: #e5e7eb;
+  --kgc-input-placeholder: #6b7280;
+}
+
+.kg-construct-page {
+  background: var(--kgc-page-bg);
+  color: var(--kgc-text);
+}
+
+.construct-sidebar {
+  background: var(--kgc-sidebar-bg);
+  border-right-color: var(--kgc-border) !important;
+}
+
+.construct-header,
+.construct-topbar,
+.construct-action-bar,
+.construct-divider {
+  border-color: var(--kgc-border) !important;
+}
+
+.construct-header,
+.construct-topbar,
+.construct-action-bar {
+  background: var(--kgc-header-bg);
+}
+
+.construct-source-switch {
+  background: var(--kgc-switch-bg);
+}
+
+.construct-source-btn {
+  color: var(--kgc-muted);
+}
+
+.construct-source-btn:hover {
+  color: var(--kgc-text);
+}
+
+.construct-source-btn.is-active {
+  background: var(--kgc-switch-active-bg);
+  color: var(--kgc-switch-active-text);
+  box-shadow: var(--kgc-switch-shadow);
+}
+
+.construct-text-shell {
+  background: var(--kgc-shell-bg);
+  border-color: var(--kgc-border-soft) !important;
+}
+
+.construct-text-shell:hover,
+.construct-text-shell:focus-within {
+  background: var(--kgc-shell-hover);
+}
+
+.construct-upload-zone {
+  background: var(--kgc-upload-bg);
+  border-color: var(--kgc-border-soft) !important;
+  color: var(--kgc-muted);
+}
+
+.construct-upload-zone:hover {
+  background: var(--kgc-upload-hover);
+  border-color: rgba(6, 182, 212, 0.4) !important;
+}
+
+.construct-view-btn,
+.construct-icon-btn {
+  background: var(--kgc-btn-bg);
+  border-color: var(--kgc-border-soft) !important;
+  color: var(--kgc-muted);
+}
+
+.construct-view-btn:hover,
+.construct-icon-btn:hover {
+  color: var(--kgc-text);
+}
+
+.construct-view-btn.is-active {
+  background: var(--kgc-btn-active-bg);
+  border-color: var(--kgc-btn-active-border) !important;
+  color: var(--kgc-btn-active-text);
+}
+
+.construct-graph-view {
+  background: var(--kgc-graph-bg);
+}
+
+.construct-logs-view {
+  background: var(--kgc-logs-bg);
+}
+
+.construct-log-row {
+  border-left-color: var(--kgc-border) !important;
+}
+
+.construct-log-row:hover {
+  background: var(--kgc-log-hover);
+}
+
 .custom-input :deep(.el-input__wrapper) {
-  background-color: rgba(31, 41, 55, 0.5);
+  background-color: var(--kgc-input-bg);
   box-shadow: none;
-  border: 1px solid rgba(75, 85, 99, 0.5);
+  border: 1px solid var(--kgc-input-border);
 }
 .custom-input :deep(.el-input__wrapper.is-focus) {
   border-color: #06b6d4;
@@ -875,7 +1031,7 @@ onUnmounted(() => {
   background-color: transparent;
   box-shadow: none;
   border: none;
-  color: #e5e7eb;
+  color: var(--kgc-input-text);
   padding: 12px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
@@ -889,19 +1045,19 @@ onUnmounted(() => {
 }
 
 .doc-filter-select :deep(.el-input__wrapper) {
-  background-color: rgba(17, 24, 39, 0.8);
+  background-color: var(--kgc-input-bg);
   box-shadow: none;
-  border: 1px solid rgba(75, 85, 99, 0.5);
+  border: 1px solid var(--kgc-input-border);
   backdrop-filter: blur(8px);
 }
 .doc-filter-select :deep(.el-input__wrapper:hover) {
   border-color: rgba(6, 182, 212, 0.5);
 }
 .doc-filter-select :deep(.el-input__inner) {
-  color: #9ca3af;
+  color: var(--kgc-input-text);
   font-size: 12px;
 }
 .doc-filter-select :deep(.el-input__inner::placeholder) {
-  color: #6b7280;
+  color: var(--kgc-input-placeholder);
 }
 </style>

@@ -1392,35 +1392,59 @@ class GraphRAGService:
         do_eat = collect_by_types({'do_eat'}, limit=10)
         no_eat = collect_by_types({'no_eat'}, limit=10)
 
-        lines = [f"基于知识图谱中与“{anchor_name}”直接相关的证据："]
+        parts = [f"基于知识图谱中与“{anchor_name}”直接相关的证据：\n"]
+
+        def _make_table_single(title: str, items: list) -> str:
+            rows = "\n".join(f"| {it} |" for it in items)
+            return f"| {title} |\n|:---:|\n{rows}"
+
+        def _make_table_dual(header_a: str, items_a: list, header_b: str, items_b: list) -> str:
+            max_len = max(len(items_a), len(items_b))
+            rows = "\n".join(
+                f"| {items_a[i] if i < len(items_a) else ''} | {items_b[i] if i < len(items_b) else ''} |"
+                for i in range(max_len)
+            )
+            return f"| {header_a} | {header_b} |\n|:---:|:---:|\n{rows}"
+
+        has_content = False
 
         # 根据问题意图优先展示对应信息
         if intent.get('ask_drug') and drugs:
-            lines.append("推荐用药：" + "、".join(drugs))
+            parts.append(_make_table_single("推荐用药", drugs))
+            has_content = True
         if intent.get('ask_check') and checks:
-            lines.append("建议检查：" + "、".join(checks))
+            parts.append(_make_table_single("建议检查", checks))
+            has_content = True
         if intent.get('ask_symptom') and symptoms:
-            lines.append("常见症状：" + "、".join(symptoms))
+            parts.append(_make_table_single("常见症状", symptoms))
+            has_content = True
         if intent.get('ask_diet'):
-            if do_eat:
-                lines.append("宜食：" + "、".join(do_eat))
-            if no_eat:
-                lines.append("忌食：" + "、".join(no_eat))
+            if do_eat and no_eat:
+                parts.append(_make_table_dual("宜食", do_eat, "忌食", no_eat))
+            elif do_eat:
+                parts.append(_make_table_single("宜食", do_eat))
+            elif no_eat:
+                parts.append(_make_table_single("忌食", no_eat))
+            if do_eat or no_eat:
+                has_content = True
 
         # 如果问题意图不明确，给出综合摘要
-        if len(lines) == 1:
+        if not has_content:
             if drugs:
-                lines.append("相关用药：" + "、".join(drugs[:10]))
+                parts.append(_make_table_single("相关用药", drugs[:10]))
+                has_content = True
             if checks:
-                lines.append("相关检查：" + "、".join(checks[:8]))
+                parts.append(_make_table_single("相关检查", checks[:8]))
+                has_content = True
             if symptoms:
-                lines.append("相关症状：" + "、".join(symptoms[:8]))
+                parts.append(_make_table_single("相关症状", symptoms[:8]))
+                has_content = True
 
-        if len(lines) == 1:
+        if not has_content:
             return ""
 
-        lines.append("以上结果来自图谱关系证据，仅供医学参考。")
-        return "\n".join(lines)
+        parts.append("\n以上结果来自图谱关系证据，仅供医学参考。")
+        return "\n\n".join(parts)
     
     def _build_local_search_context(self, chunks: List[Dict], entities: List[Dict],
                                      relations: List[Dict], community_context: List[Dict]) -> str:
@@ -1434,8 +1458,8 @@ class GraphRAGService:
         # 1. 实体信息
         if entities:
             entity_lines = ["【相关实体】"]
-            for e in entities[:12]:
-                desc = f"：{e['description'][:120]}" if e.get('description') else ""
+            for e in entities[:20]:
+                desc = f"：{e['description'][:300]}" if e.get('description') else ""
                 entity_lines.append(f"• [{e.get('type', '?')}] {e['name']}{desc}")
             context_parts.append("\n".join(entity_lines))
 
@@ -1443,16 +1467,26 @@ class GraphRAGService:
         if relations:
             from collections import defaultdict
             grouped: dict = defaultdict(list)
-            for r in relations[:200]:
+            for r in relations[:400]:
                 grouped[r['source']].append(r)
+            # 关系类型名称映射（避免 LLM 输出原始英文类型名）
+            _rel_type_map = {
+                'do_eat': '宜食', 'no_eat': '忌食',
+                'recommand_drug': '推荐用药', 'common_drug': '常用药物',
+                'need_check': '建议检查', 'has_symptom': '常见症状',
+                'belongs_to': '归属', 'acompany_with': '常伴疾病',
+                'cause': '病因', 'easy_get': '易感人群',
+                'cure_department': '就诊科室', 'cure_way': '治疗方式',
+            }
             rel_lines = ["【知识图谱关系】"]
-            for src, rels in list(grouped.items())[:10]:
+            for src, rels in list(grouped.items())[:20]:
                 rel_lines.append(f"▶ {src}")
-                for r in rels[:15]:
+                for r in rels[:30]:
                     target_info = r['target']
                     if r.get('target_desc'):
-                        target_info += f"（{r['target_desc'][:80]}）"
-                    rel_lines.append(f"   -{r['type']}→ {target_info}")
+                        target_info += f"（{r['target_desc'][:200]}）"
+                    rel_type = _rel_type_map.get(r['type'], r['type'])
+                    rel_lines.append(f"   -{rel_type}→ {target_info}")
             context_parts.append("\n".join(rel_lines))
 
         # 3. 社区上下文（包含报告文本，如有）
@@ -1461,17 +1495,17 @@ class GraphRAGService:
             for c in community_context:
                 report = c.get("report", "")
                 if report:
-                    comm_lines.append(f"• 社区 {c['community_id']} 摘要：{report[:300]}")
+                    comm_lines.append(f"• 社区 {c['community_id']} 摘要：{report[:600]}")
                 else:
-                    members = "、".join(c.get("members", [])[:10])
+                    members = "、".join(c.get("members", [])[:15])
                     comm_lines.append(f"• 社区 {c['community_id']} 成员：{members}")
             context_parts.append("\n".join(comm_lines))
 
         # 4. 原文片段（有 :Chunk 节点时才有内容）
         if chunks:
             chunk_lines = ["【原文片段】"]
-            for idx, c in enumerate(chunks[:5], 1):
-                text = c.get("text", "")[:500]
+            for idx, c in enumerate(chunks[:8], 1):
+                text = c.get("text", "")[:1000]
                 score_info = f" (相似度: {c['score']:.3f})" if c.get('score') else ""
                 chunk_lines.append(f"[{idx}]{score_info}: {text}")
             context_parts.append("\n".join(chunk_lines))
@@ -2522,6 +2556,115 @@ class GraphRAGService:
             logger.error(f"Merge answers failed: {e}")
             return f"【Local Search 答案】\n{local_answer}\n\n【Global Search 答案】\n{global_answer}"
 
+    def _build_sse_event(self, payload: Dict[str, Any]) -> str:
+        return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+    def _extract_follow_up_questions(self, synthesis_text: str) -> list:
+        """从综合专家回复中提取结构化追问问题，返回 JSON 列表。失败返回空列表。"""
+        if not self.llm or not synthesis_text or len(synthesis_text) < 50:
+            return []
+        extract_prompt = (
+            '请从以下医疗回复中提取末尾的追问/补充问题（通常在"补充信息""下一步追问""关键缺口"等段落中）。\n'
+            "输出 JSON 数组，每个元素格式：\n"
+            '{"key": "q1", "label": "问题文本（简洁一句话）", "type": "input"}\n'
+            "type 取值：input（短文本）、textarea（长文本）、select（选择题，需额外 options 字段）。\n"
+            "如果问题包含明确的可选项（如 是/否、干咳/有痰），则用 select 并提供 options 数组。\n"
+            "最多提取 5 个最关键的问题。如果没有追问问题，输出空数组 []。\n"
+            "仅输出合法 JSON，不要有任何其它内容。\n\n"
+            f"--- 回复内容 ---\n{synthesis_text[-3000:]}"
+        )
+        try:
+            raw = self.llm.generate_answer(extract_prompt, "", system_prompt="你是一个 JSON 提取器，只输出合法 JSON。")
+            raw = raw.strip()
+            if raw.startswith("```"):
+                raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+            questions = json.loads(raw)
+            if not isinstance(questions, list):
+                return []
+            valid = []
+            for i, q in enumerate(questions[:5]):
+                if isinstance(q, dict) and q.get("label"):
+                    valid.append({
+                        "key": q.get("key", f"q{i+1}"),
+                        "label": str(q["label"]),
+                        "type": q.get("type", "input") if q.get("type") in ("input", "textarea", "select") else "input",
+                        **({"options": q["options"]} if q.get("type") == "select" and isinstance(q.get("options"), list) else {}),
+                    })
+            return valid
+        except Exception as e:
+            logger.warning(f"Failed to extract follow-up questions: {e}")
+            return []
+
+    def _merge_system_prompts(self, base_prompt: Optional[str], extra_prompt: Optional[str]) -> Optional[str]:
+        parts = []
+        if base_prompt:
+            parts.append(base_prompt.strip())
+        if extra_prompt:
+            parts.append(extra_prompt.strip())
+        return "\n\n".join(part for part in parts if part) or None
+
+    def _compact_expert_detail(self, text: str, limit: int = 480) -> str:
+        detail = (text or '').strip()
+        if len(detail) <= limit:
+            return detail
+        return detail[: limit - 1].rstrip() + '…'
+
+    def _run_multi_expert_answer(
+        self,
+        question: str,
+        context: str,
+        expert_role: str,
+        task_instruction: str,
+        system_prompt: str = None,
+    ) -> str:
+        """使用流式调用收集专家回答，避免 request_timeout 在长回答时触发超时。
+
+        相比 .invoke()（受 request_timeout 限制总耗时），.stream() 的超时只
+        作用于首 token 到达前的等待时间，生成过程不受限制，因此不会卡死。
+        """
+        if not self.llm:
+            raise RuntimeError("LLM not initialized")
+
+        expert_system_prompt = self._merge_system_prompts(
+            system_prompt,
+            f"你正在参与一个单模型多专家协作问答流程。你当前的角色是：{expert_role}。"
+            "请只基于已提供上下文输出分析，不要编造未出现的事实。",
+        )
+        expert_query = f"""原始问题：{question}
+
+你的角色：{expert_role}
+
+任务要求：
+{task_instruction}
+
+输出要求：
+1. 先给出简短结论。
+2. 再说明关键依据。
+3. 最后说明不确定性、缺口或边界。
+请直接输出分析结果。"""
+        # 使用流式收集，避免同步 invoke 被 request_timeout 杀死
+        tokens = []
+        for token in self.llm.generate_answer_stream(expert_query, context, system_prompt=expert_system_prompt):
+            tokens.append(token)
+        result = ''.join(tokens)
+        if not result.strip():
+            raise RuntimeError(f"{expert_role} 返回空结果")
+        return result
+
+    def _build_multi_expert_context(self, context: str, expert_outputs: Dict[str, str]) -> str:
+        sections = ["【原始检索上下文】", context]
+        stage_titles = {
+            "evidence": "证据专家",
+            "pathology": "病理专家",
+            "reviewer": "审稿专家",
+        }
+        for stage_key in ("evidence", "pathology", "reviewer"):
+            stage_output = (expert_outputs.get(stage_key) or '').strip()
+            if stage_output:
+                sections.append(f"【{stage_titles[stage_key]}意见】")
+                sections.append(stage_output)
+        return "\n\n".join(sections)
+
     def hybrid_search_stream(
         self,
         question: str,
@@ -2530,6 +2673,8 @@ class GraphRAGService:
         chat_history: list = None,
         doc_id: str = None,
         database: str = None,
+        system_prompt: str = None,
+        expert_mode: str = "standard",
     ):
         """混合搜索流式版本 - 生成 SSE 事件字符串序列
 
@@ -2539,8 +2684,6 @@ class GraphRAGService:
         每个 yield 都是完整的 SSE 行，格式为:
             data: <json>\\n\\n
         """
-        import json as _json
-
         enhanced_question = self._build_question_with_history(question, chat_history or [])
 
         if strategy == "auto":
@@ -2554,7 +2697,7 @@ class GraphRAGService:
             )
         except Exception as e:
             logger.error(f"hybrid_search_stream retrieval failed: {e}")
-            yield f"data: {_json.dumps({'type': 'error', 'error': str(e)}, ensure_ascii=False)}\n\n"
+            yield self._build_sse_event({"type": "error", "error": str(e)})
             return
 
         context = local_result.pop('_context', '') or ''
@@ -2570,30 +2713,221 @@ class GraphRAGService:
             "communities_used": len(local_result.get("community_context", [])),
             "evidence": local_result.get("evidence", {}),
         }
-        yield f"data: {_json.dumps(metadata_payload, ensure_ascii=False)}\n\n"
+        yield self._build_sse_event(metadata_payload)
+
+        def _stream_standard_answer():
+            total_tokens = 0
+            try:
+                for token in self.llm.generate_answer_stream(enhanced_question, context, system_prompt=system_prompt):
+                    total_tokens += 1
+                    yield self._build_sse_event({"type": "token", "token": token})
+            except Exception as exc:
+                logger.error(f"hybrid_search_stream LLM failed: {exc}")
+                if structured_fallback:
+                    yield self._build_sse_event({"type": "token", "token": structured_fallback})
+
+            if total_tokens == 0 and structured_fallback:
+                yield self._build_sse_event({"type": "token", "token": structured_fallback})
 
         # 2. 流式 LLM 生成
         if self.llm and context:
-            total_tokens = 0
-            try:
-                for token in self.llm.generate_answer_stream(enhanced_question, context):
-                    total_tokens += 1
-                    yield f"data: {_json.dumps({'type': 'token', 'token': token}, ensure_ascii=False)}\n\n"
-            except Exception as e:
-                logger.error(f"hybrid_search_stream LLM failed: {e}")
-                # 用结构化兜底
-                if structured_fallback:
-                    yield f"data: {_json.dumps({'type': 'token', 'token': structured_fallback}, ensure_ascii=False)}\n\n"
+            if expert_mode == "multi":
+                expert_stage_titles = {
+                    "evidence": "证据专家",
+                    "pathology": "病理专家",
+                    "reviewer": "审稿专家",
+                    "synthesis": "综合专家",
+                }
+                synthesis_tokens = 0
+                expert_outputs = {}  # 收集各专家输出，失败的跳过
 
-            # 如果 LLM 没给出内容，用结构化答案补充
-            if total_tokens == 0 and structured_fallback:
-                yield f"data: {_json.dumps({'type': 'token', 'token': structured_fallback}, ensure_ascii=False)}\n\n"
+                # --- 证据专家 ---
+                yield self._build_sse_event({
+                    "type": "expert_stage",
+                    "stage_key": "evidence",
+                    "title": expert_stage_titles["evidence"],
+                    "status": "running",
+                    "detail": "正在提取与问题最直接相关的证据链...",
+                })
+                try:
+                    evidence_answer = self._run_multi_expert_answer(
+                        enhanced_question,
+                        context,
+                        expert_stage_titles["evidence"],
+                        "提炼与用户问题直接相关的事实证据、实体关系、原文片段和可验证依据。"
+                        "优先回答'图谱里明确能支持什么'，避免过早下结论。",
+                        system_prompt=system_prompt,
+                    )
+                    expert_outputs["evidence"] = evidence_answer
+                    yield self._build_sse_event({
+                        "type": "expert_stage",
+                        "stage_key": "evidence",
+                        "title": expert_stage_titles["evidence"],
+                        "status": "done",
+                        "detail": self._compact_expert_detail(evidence_answer),
+                    })
+                except Exception as e:
+                    logger.warning(f"Expert [evidence] failed: {e}")
+                    yield self._build_sse_event({
+                        "type": "expert_stage",
+                        "stage_key": "evidence",
+                        "title": expert_stage_titles["evidence"],
+                        "status": "error",
+                        "detail": f"证据专家分析超时或异常，已跳过。({type(e).__name__})",
+                    })
+
+                # --- 病理专家 ---
+                yield self._build_sse_event({
+                    "type": "expert_stage",
+                    "stage_key": "pathology",
+                    "title": expert_stage_titles["pathology"],
+                    "status": "running",
+                    "detail": "正在从领域角度解释证据含义...",
+                })
+                try:
+                    pathology_answer = self._run_multi_expert_answer(
+                        enhanced_question,
+                        context,
+                        expert_stage_titles["pathology"],
+                        "从病理/领域专家视角解释上述证据意味着什么。"
+                        "需要指出诊断价值、分类依据、风险提示或临床边界。",
+                        system_prompt=system_prompt,
+                    )
+                    expert_outputs["pathology"] = pathology_answer
+                    yield self._build_sse_event({
+                        "type": "expert_stage",
+                        "stage_key": "pathology",
+                        "title": expert_stage_titles["pathology"],
+                        "status": "done",
+                        "detail": self._compact_expert_detail(pathology_answer),
+                    })
+                except Exception as e:
+                    logger.warning(f"Expert [pathology] failed: {e}")
+                    yield self._build_sse_event({
+                        "type": "expert_stage",
+                        "stage_key": "pathology",
+                        "title": expert_stage_titles["pathology"],
+                        "status": "error",
+                        "detail": f"病理专家分析超时或异常，已跳过。({type(e).__name__})",
+                    })
+
+                # --- 审稿专家（基于已成功的专家输出）---
+                reviewer_context = self._build_multi_expert_context(context, expert_outputs)
+                yield self._build_sse_event({
+                    "type": "expert_stage",
+                    "stage_key": "reviewer",
+                    "title": expert_stage_titles["reviewer"],
+                    "status": "running",
+                    "detail": "正在检查证据与结论是否一致...",
+                })
+                try:
+                    reviewer_answer = self._run_multi_expert_answer(
+                        enhanced_question,
+                        reviewer_context,
+                        expert_stage_titles["reviewer"],
+                        "审查前面专家的结论是否严格被检索上下文支持。"
+                        "指出冲突、推断过度和仍需补充的信息。",
+                        system_prompt=system_prompt,
+                    )
+                    expert_outputs["reviewer"] = reviewer_answer
+                    yield self._build_sse_event({
+                        "type": "expert_stage",
+                        "stage_key": "reviewer",
+                        "title": expert_stage_titles["reviewer"],
+                        "status": "done",
+                        "detail": self._compact_expert_detail(reviewer_answer),
+                    })
+                except Exception as e:
+                    logger.warning(f"Expert [reviewer] failed: {e}")
+                    yield self._build_sse_event({
+                        "type": "expert_stage",
+                        "stage_key": "reviewer",
+                        "title": expert_stage_titles["reviewer"],
+                        "status": "error",
+                        "detail": f"审稿专家分析超时或异常，已跳过。({type(e).__name__})",
+                    })
+
+                # --- 综合专家（流式输出最终回答）---
+                synthesis_context = self._build_multi_expert_context(context, expert_outputs)
+                available_experts = len(expert_outputs)
+                expert_label = f"{available_experts}位专家" if available_experts > 0 else "检索上下文"
+                synthesis_query = f"""请综合{expert_label}意见，输出最终回答。
+
+原始问题：{enhanced_question}
+
+要求：
+1. 优先保留被证据明确支持的结论。
+2. 若存在不确定性或争议，明确写出。
+3. 回答要直接、结构清晰，避免重复专家内部讨论过程。
+4. 如果证据不足，请明确说明不足点。"""
+                synthesis_system_prompt = self._merge_system_prompts(
+                    system_prompt,
+                    "你现在是多专家协作的最终整合者，需要综合已有专家意见，"
+                    "给出可信、克制、可解释的最终答复。",
+                )
+                yield self._build_sse_event({
+                    "type": "expert_stage",
+                    "stage_key": "synthesis",
+                    "title": expert_stage_titles["synthesis"],
+                    "status": "running",
+                    "detail": f"正在综合{expert_label}意见生成最终回答...",
+                })
+
+                try:
+                    synthesis_parts = []
+                    for token in self.llm.generate_answer_stream(
+                        synthesis_query,
+                        synthesis_context,
+                        system_prompt=synthesis_system_prompt,
+                    ):
+                        synthesis_tokens += 1
+                        synthesis_parts.append(token)
+                        yield self._build_sse_event({"type": "token", "token": token})
+                except Exception as e:
+                    logger.error(f"Expert [synthesis] stream failed: {e}")
+                    synthesis_parts = []
+                    yield self._build_sse_event({
+                        "type": "expert_stage",
+                        "stage_key": "synthesis",
+                        "title": expert_stage_titles["synthesis"],
+                        "status": "error",
+                        "detail": f"综合专家生成异常，尝试回退标准链路。({type(e).__name__})",
+                    })
+
+                if synthesis_tokens == 0 and structured_fallback:
+                    yield self._build_sse_event({"type": "token", "token": structured_fallback})
+
+                if synthesis_tokens > 0:
+                    yield self._build_sse_event({
+                        "type": "expert_stage",
+                        "stage_key": "synthesis",
+                        "title": expert_stage_titles["synthesis"],
+                        "status": "done",
+                        "detail": "多专家协作已完成。",
+                    })
+                    # 提取追问问题
+                    try:
+                        synthesis_text = ''.join(synthesis_parts)
+                        follow_ups = self._extract_follow_up_questions(synthesis_text)
+                        if follow_ups:
+                            yield self._build_sse_event({
+                                "type": "follow_up_questions",
+                                "questions": follow_ups,
+                            })
+                    except Exception as e:
+                        logger.warning(f"Follow-up extraction failed: {e}")
+                    yield self._build_sse_event({"type": "done"})
+                    return
+                # synthesis 失败且无 fallback → 走标准流程
+
+            for chunk in _stream_standard_answer():
+                yield chunk
         elif structured_fallback:
-            yield f"data: {_json.dumps({'type': 'token', 'token': structured_fallback}, ensure_ascii=False)}\n\n"
+            yield self._build_sse_event({"type": "token", "token": structured_fallback})
         else:
-            yield f"data: {_json.dumps({'type': 'token', 'token': '未能从知识库中找到相关信息。'}, ensure_ascii=False)}\n\n"
+            yield self._build_sse_event({"type": "token", "token": "未能从知识库中找到相关信息。"})
 
-        yield f"data: {_json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
+        yield self._build_sse_event({"type": "done"})
 
     def delete_document(self, doc_id: str) -> Dict[str, Any]:
         """删除文档及其关联的图数据和向量数据"""

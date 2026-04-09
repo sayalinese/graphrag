@@ -166,6 +166,7 @@ const linkProgressMap = new Map<string, number>();
 
 let graph: any = null;
 let resizeObserver: ResizeObserver | null = null;
+let themeObserver: MutationObserver | null = null;
 let animationToken = 0;
 let rafId: number | null = null;
 let highlightActive = false;
@@ -468,6 +469,10 @@ function getFontSize(globalScale: number, min = 10, max = 18) {
   return Math.max(min, Math.min(max, size));
 }
 
+function isDarkMode(): boolean {
+  return document.documentElement.classList.contains('dark');
+}
+
 function drawRelationLabel(ctx: CanvasRenderingContext2D, label: string, x: number, y: number, alpha: number, globalScale: number) {
   // ✅ globalScale 太小（视角太远）就不画边文字，避免“远景巨字”
   if (!label) return;
@@ -486,12 +491,15 @@ function drawRelationLabel(ctx: CanvasRenderingContext2D, label: string, x: numb
 
   ctx.save();
   ctx.globalAlpha = Math.min(0.92, alpha + 0.06);
-  ctx.fillStyle = 'rgba(10, 25, 47, 0.84)';
-  ctx.fillRect(rectX, rectY, rectW, rectH);
-  ctx.strokeStyle = 'rgba(34, 211, 238, 0.45)';
-  ctx.lineWidth = 0.8;
-  ctx.strokeRect(rectX, rectY, rectW, rectH);
-  ctx.fillStyle = 'rgba(229, 231, 235, 0.95)';
+  const dark = isDarkMode();
+  if (dark) {
+    ctx.fillStyle = 'rgba(10, 25, 47, 0.84)';
+    ctx.fillRect(rectX, rectY, rectW, rectH);
+    ctx.strokeStyle = 'rgba(34, 211, 238, 0.45)';
+    ctx.lineWidth = 0.8;
+    ctx.strokeRect(rectX, rectY, rectW, rectH);
+  }
+  ctx.fillStyle = dark ? 'rgba(229, 231, 235, 0.95)' : 'rgba(15, 23, 42, 0.88)';
   ctx.textBaseline = 'middle';
   ctx.fillText(text, rectX + paddingX, y);
   ctx.restore();
@@ -590,7 +598,10 @@ function drawNode(node: any, ctx: CanvasRenderingContext2D, globalScale: number)
   if (globalScale >= 0.45) {
     const fontSize = getFontSize(globalScale, 10, 18);
     ctx.font = `600 ${fontSize}px sans-serif`;
-    ctx.fillStyle = `rgba(229, 231, 235, ${Math.min(1, opacity + 0.2)})`;
+    const dark = isDarkMode();
+    ctx.fillStyle = dark
+      ? `rgba(229, 231, 235, ${Math.min(1, opacity + 0.2)})`
+      : `rgba(15, 23, 42, ${Math.min(1, opacity + 0.2)})`;
     ctx.textBaseline = 'middle';
     ctx.fillText(label, node.x + (radius * scale) + 4, node.y);
   }
@@ -612,7 +623,7 @@ function initGraph() {
   const createGraph = ForceGraph as unknown as () => any;
 
   graph = createGraph()(containerRef.value)
-    .backgroundColor('#060d1d')
+    .backgroundColor(isDarkMode() ? '#060d1d' : '#f5f6f8')
     .nodeId('id')
     .enableNodeDrag(true)
     .warmupTicks(70)
@@ -784,10 +795,22 @@ onMounted(() => {
   initGraph();
   // 默认先展示 demo（你不想默认展示就删掉）
   setGraphData(DEMO_GRAPH);
+
+  // 监听主题切换，更新 canvas 背景色
+  themeObserver = new MutationObserver(() => {
+    if (graph) {
+      graph.backgroundColor(isDarkMode() ? '#060d1d' : '#f5f6f8');
+    }
+  });
+  themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
 });
 
 onBeforeUnmount(() => {
   clearAnimation();
+  if (themeObserver) {
+    themeObserver.disconnect();
+    themeObserver = null;
+  }
   if (resizeObserver) {
     resizeObserver.disconnect();
     resizeObserver = null;

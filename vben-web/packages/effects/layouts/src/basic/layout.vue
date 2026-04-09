@@ -102,6 +102,10 @@ const showHeaderNav = computed(() => {
   );
 });
 
+const showTabbar = computed(() => {
+  return preferences.tabbar.enable && !route.meta.hideInTab;
+});
+
 const {
   handleMenuSelect,
   handleMenuOpen,
@@ -231,7 +235,7 @@ const headerSlots = computed(() => {
     :sidebar-theme="sidebarTheme"
     :sidebar-width="preferences.sidebar.width"
     :side-collapse-width="preferences.sidebar.collapseWidth"
-    :tabbar-enable="preferences.tabbar.enable"
+    :tabbar-enable="showTabbar"
     :tabbar-height="preferences.tabbar.height"
     :z-index="preferences.app.zIndex"
     @side-mouse-leave="handleSideMouseLeave"
@@ -358,7 +362,7 @@ const headerSlots = computed(() => {
 
     <template #tabbar>
       <LayoutTabbar
-        v-if="preferences.tabbar.enable"
+        v-if="showTabbar"
         :show-icon="preferences.tabbar.showIcon"
         :theme="theme"
       />

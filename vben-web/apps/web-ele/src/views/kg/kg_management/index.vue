@@ -88,6 +88,35 @@ const formatTime = (val: any) => {
   }
 };
 
+const isDarkMode = () => document.documentElement.classList.contains('dark');
+
+const buildLinkTooltip = (link: any) => {
+  const dark = isDarkMode();
+  const props = link.properties || {};
+  const desc = props.description || props.desc || '';
+  const source = typeof link.source === 'object' ? link.source.label : link.source;
+  const target = typeof link.target === 'object' ? link.target.label : link.target;
+  const cardBg = dark ? 'rgba(15, 23, 42, 0.92)' : 'rgba(255, 255, 255, 0.96)';
+  const cardBorder = dark ? 'rgba(71, 85, 105, 0.72)' : 'rgba(148, 163, 184, 0.35)';
+  const titleColor = dark ? '#67e8f9' : '#0369a1';
+  const textColor = dark ? '#cbd5e1' : '#334155';
+  const metaColor = dark ? '#94a3b8' : '#64748b';
+  const dividerColor = dark ? 'rgba(71, 85, 105, 0.6)' : 'rgba(203, 213, 225, 0.8)';
+  const shadow = dark ? '0 16px 32px rgba(2, 6, 23, 0.42)' : '0 16px 32px rgba(15, 23, 42, 0.12)';
+
+  return `
+    <div style="padding:10px 12px;background:${cardBg};border:1px solid ${cardBorder};border-radius:10px;box-shadow:${shadow};backdrop-filter:blur(10px);font-size:12px;">
+      <div style="font-weight:700;color:${titleColor};margin-bottom:4px;">${link.label}</div>
+      ${desc ? `<div style="color:${textColor};margin-bottom:4px;max-width:200px;white-space:normal;line-height:1.5;">${desc}</div>` : ''}
+      <div style="color:${metaColor};margin-top:4px;padding-top:4px;border-top:1px solid ${dividerColor};display:flex;gap:4px;align-items:center;">
+        <span style="max-width:80px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${source}</span>
+        <span>→</span>
+        <span style="max-width:80px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${target}</span>
+      </div>
+    </div>
+  `;
+};
+
 const loadDatabases = async () => {
   try {
     const res = await getDatabases();
@@ -149,24 +178,7 @@ const initGraph = async () => {
         .graphData(gData)
         .nodeLabel('label')
         .nodeAutoColorBy('category')
-        .linkLabel((link: any) => {
-          const props = link.properties || {};
-          const desc = props.description || props.desc || '';
-          const source = typeof link.source === 'object' ? link.source.label : link.source;
-          const target = typeof link.target === 'object' ? link.target.label : link.target;
-          
-          return `
-            <div class="p-2 bg-gray-900/90 rounded border border-gray-700 shadow-xl backdrop-blur-sm text-xs">
-              <div class="font-bold text-cyan-400 mb-1">${link.label}</div>
-              ${desc ? `<div class="text-gray-300 mb-1 max-w-[200px] whitespace-normal">${desc}</div>` : ''}
-              <div class="text-gray-500 mt-1 pt-1 border-t border-gray-700/50 flex items-center gap-1">
-                <span class="truncate max-w-[80px]">${source}</span>
-                <span>→</span>
-                <span class="truncate max-w-[80px]">${target}</span>
-              </div>
-            </div>
-          `;
-        })
+        .linkLabel((link: any) => buildLinkTooltip(link))
         .nodeThreeObject((node: any) => {
           const sprite = new SpriteText(node.label);
           sprite.color = node.color;
@@ -522,12 +534,12 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="h-[calc(100vh-80px)] w-full flex bg-[#050505] text-gray-200 overflow-hidden font-sans">
+  <div class="kg-management-page h-[calc(100vh-80px)] w-full flex overflow-hidden font-sans">
     <!-- 左侧控制面板 -->
-    <div class="w-[380px] flex-none flex flex-col border-r border-gray-800 bg-[#0f1115] shadow-2xl z-20">
+    <div class="management-sidebar w-[380px] flex-none flex flex-col border-r shadow-2xl z-20">
       <!-- 标题栏 -->
-      <div class="flex-none p-5 border-b border-gray-800 bg-gradient-to-r from-gray-900 to-gray-800">
-        <h2 class="text-lg font-bold flex items-center gap-3 text-white tracking-wide">
+      <div class="management-sidebar__header flex-none p-5 border-b">
+        <h2 class="management-title text-lg font-bold flex items-center gap-3 tracking-wide">
           <div class="p-2 bg-cyan-500/20 rounded-lg backdrop-blur-sm">
             <el-icon class="text-cyan-400 text-xl"><Share /></el-icon>
           </div>
@@ -539,7 +551,7 @@ onUnmounted(() => {
       <div class="flex-1 flex flex-col p-5 space-y-6 overflow-hidden">
         
         <!-- 筛选区域 -->
-        <div class="flex-none bg-gray-800/40 rounded-xl p-4 border border-gray-700/50 backdrop-blur-sm">
+        <div class="management-section flex-none rounded-xl p-4 border backdrop-blur-sm">
           <div class="flex items-center gap-2 mb-4">
             <div class="w-1 h-4 bg-cyan-500 rounded-full shadow-[0_0_8px_rgba(6,182,212,0.5)]"></div>
             <h3 class="text-sm font-bold text-gray-300">数据筛选</h3>
@@ -588,7 +600,7 @@ onUnmounted(() => {
         </div>
 
         <!-- 文档操作区域 -->
-        <div class="flex-none bg-gray-800/40 rounded-xl p-4 border border-gray-700/50 backdrop-blur-sm transition-all duration-300">
+        <div class="management-section flex-none rounded-xl p-4 border backdrop-blur-sm transition-all duration-300">
           <div class="flex items-center gap-2 mb-4">
             <div class="w-1 h-4 bg-purple-500 rounded-full shadow-[0_0_8px_rgba(168,85,247,0.5)]"></div>
             <h3 class="text-sm font-bold text-gray-300">批量操作</h3>
@@ -642,7 +654,7 @@ onUnmounted(() => {
         </div>
 
         <!-- 编辑区域 (Flex-1 to fill remaining space) -->
-        <div class="flex-1 flex flex-col bg-gray-800/40 rounded-xl p-4 border border-gray-700/50 backdrop-blur-sm overflow-hidden">
+        <div class="management-section flex-1 flex flex-col rounded-xl p-4 border backdrop-blur-sm overflow-hidden">
           <div class="flex-none flex items-center justify-between mb-4">
             <div class="flex items-center gap-2">
               <div class="w-1 h-4 bg-orange-500 rounded-full shadow-[0_0_8px_rgba(249,115,22,0.5)]"></div>
@@ -652,20 +664,20 @@ onUnmounted(() => {
               v-if="selectedElement" 
               size="small" 
               effect="dark" 
-              class="!bg-gray-900 !border-gray-700 font-mono"
+              class="management-tag font-mono"
             >
    
             </el-tag>
           </div>
 
           <div v-if="selectedElement" class="flex-1 flex flex-col overflow-hidden">
-            <div class="flex-none mb-3 flex items-center gap-2 text-xs text-cyan-400 bg-cyan-950/30 p-2 rounded border border-cyan-900/50">
+            <div class="management-edit-notice flex-none mb-3 flex items-center gap-2 text-xs p-2 rounded border">
               <el-icon><Edit /></el-icon>
               <span>正在编辑: {{ selectedType === 'node' ? '节点' : '关系' }}</span>
             </div>
 
             <!-- Basic Info Section -->
-            <div class="mb-4 p-3 bg-gray-900/50 rounded-lg border border-gray-700/50 space-y-2 flex-none">
+            <div class="management-info-card mb-4 p-3 rounded-lg border space-y-2 flex-none">
                <div class="text-xs text-gray-500 uppercase font-bold">基本信息</div>
                <div class="flex items-center justify-between text-sm">
                  <span class="text-gray-400">ID:</span>
@@ -721,7 +733,7 @@ onUnmounted(() => {
                   </el-form-item>
                 </div>
                 
-                <div v-if="Object.keys(editForm.properties).length === 0" class="text-gray-500 text-xs text-center py-8 bg-gray-900/50 rounded-lg border border-dashed border-gray-700">
+                <div v-if="Object.keys(editForm.properties).length === 0" class="management-info-card text-gray-500 text-xs text-center py-8 rounded-lg border border-dashed">
                   该元素没有可编辑的属性
                 </div>
               </div>
@@ -749,8 +761,8 @@ onUnmounted(() => {
             </el-form>
           </div>
           
-          <div v-else class="flex-1 flex flex-col items-center justify-center text-gray-500 text-sm py-8 opacity-60">
-            <div class="w-16 h-16 rounded-full bg-gray-800/50 flex items-center justify-center mb-3 border border-gray-700/50">
+          <div v-else class="management-empty-state flex-1 flex flex-col items-center justify-center text-sm py-8 opacity-60">
+            <div class="management-empty-icon w-16 h-16 rounded-full flex items-center justify-center mb-3 border">
               <el-icon class="text-2xl text-gray-400"><Connection /></el-icon>
             </div>
             <p class="font-medium">点击图谱元素</p>
@@ -761,11 +773,11 @@ onUnmounted(() => {
     </div>
 
     <!-- 右侧图谱区域 -->
-    <div class="flex-1 relative bg-[#050505]">
+    <div class="management-graph-panel flex-1 relative">
       <div ref="graphContainer" class="w-full h-full"></div>
       
-      <div v-if="loading" class="absolute inset-0 flex items-center justify-center bg-black/60 backdrop-blur-sm z-10">
-        <div class="flex flex-col items-center bg-gray-900 p-6 rounded-xl border border-gray-800 shadow-2xl">
+      <div v-if="loading" class="management-loading-overlay absolute inset-0 flex items-center justify-center backdrop-blur-sm z-10">
+        <div class="management-loading-card flex flex-col items-center p-6 rounded-xl border shadow-2xl">
           <div class="loading-spinner mb-4"></div>
           <span class="text-cyan-400 font-medium tracking-wider">正在构建图谱...</span>
         </div>
@@ -775,6 +787,131 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+:global(:root) {
+  --kgm-page-bg:
+    radial-gradient(circle at top left, rgba(59, 130, 246, 0.05), transparent 26%),
+    linear-gradient(180deg, #f7f8fa, #eef2f7 72%);
+  --kgm-sidebar-bg: linear-gradient(180deg, rgba(250, 251, 253, 0.96), rgba(244, 247, 251, 0.96));
+  --kgm-sidebar-border: rgba(148, 163, 184, 0.18);
+  --kgm-header-bg: linear-gradient(90deg, rgba(248, 250, 252, 0.92), rgba(238, 242, 247, 0.98));
+  --kgm-title: #0f172a;
+  --kgm-section-bg: rgba(255, 255, 255, 0.74);
+  --kgm-section-border: rgba(148, 163, 184, 0.18);
+  --kgm-info-bg: rgba(248, 250, 252, 0.88);
+  --kgm-info-border: rgba(148, 163, 184, 0.2);
+  --kgm-tag-bg: rgba(226, 232, 240, 0.92);
+  --kgm-tag-border: rgba(148, 163, 184, 0.28);
+  --kgm-tag-text: #334155;
+  --kgm-edit-bg: rgba(14, 165, 233, 0.08);
+  --kgm-edit-border: rgba(14, 165, 233, 0.2);
+  --kgm-edit-text: #0369a1;
+  --kgm-empty-bg: rgba(248, 250, 252, 0.8);
+  --kgm-empty-border: rgba(148, 163, 184, 0.2);
+  --kgm-graph-bg: linear-gradient(180deg, rgba(247, 249, 252, 0.96), rgba(239, 244, 250, 1));
+  --kgm-overlay-bg: rgba(241, 245, 249, 0.72);
+  --kgm-overlay-card-bg: rgba(255, 255, 255, 0.9);
+  --kgm-overlay-card-border: rgba(148, 163, 184, 0.22);
+  --kgm-input-bg: rgba(255, 255, 255, 0.82);
+  --kgm-input-border: rgba(148, 163, 184, 0.32);
+  --kgm-input-border-hover: rgba(100, 116, 139, 0.44);
+  --kgm-input-focus-bg: #ffffff;
+  --kgm-input-text: #334155;
+  --kgm-label: #64748b;
+}
+
+:global(.dark) {
+  --kgm-page-bg: #050505;
+  --kgm-sidebar-bg: #0f1115;
+  --kgm-sidebar-border: rgba(31, 41, 55, 0.9);
+  --kgm-header-bg: linear-gradient(to right, rgb(17, 24, 39), rgb(31, 41, 55));
+  --kgm-title: #ffffff;
+  --kgm-section-bg: rgba(31, 41, 55, 0.4);
+  --kgm-section-border: rgba(55, 65, 81, 0.5);
+  --kgm-info-bg: rgba(17, 24, 39, 0.5);
+  --kgm-info-border: rgba(55, 65, 81, 0.5);
+  --kgm-tag-bg: rgb(17, 24, 39);
+  --kgm-tag-border: rgb(55, 65, 81);
+  --kgm-tag-text: #e5e7eb;
+  --kgm-edit-bg: rgba(8, 47, 73, 0.3);
+  --kgm-edit-border: rgba(8, 47, 73, 0.5);
+  --kgm-edit-text: #22d3ee;
+  --kgm-empty-bg: rgba(31, 41, 55, 0.5);
+  --kgm-empty-border: rgba(55, 65, 81, 0.5);
+  --kgm-graph-bg: #050505;
+  --kgm-overlay-bg: rgba(0, 0, 0, 0.6);
+  --kgm-overlay-card-bg: rgb(17, 24, 39);
+  --kgm-overlay-card-border: rgba(31, 41, 55, 0.9);
+  --kgm-input-bg: rgba(17, 24, 39, 0.8);
+  --kgm-input-border: rgba(75, 85, 99, 0.4);
+  --kgm-input-border-hover: rgba(107, 114, 128, 0.8);
+  --kgm-input-focus-bg: rgba(31, 41, 55, 1);
+  --kgm-input-text: #e5e7eb;
+  --kgm-label: #9ca3af;
+}
+
+.kg-management-page {
+  background: var(--kgm-page-bg);
+  color: var(--kgm-input-text);
+}
+
+.management-sidebar {
+  background: var(--kgm-sidebar-bg);
+  border-right-color: var(--kgm-sidebar-border) !important;
+}
+
+.management-sidebar__header {
+  background: var(--kgm-header-bg);
+  border-bottom-color: var(--kgm-sidebar-border) !important;
+}
+
+.management-title {
+  color: var(--kgm-title) !important;
+}
+
+.management-section {
+  background: var(--kgm-section-bg);
+  border-color: var(--kgm-section-border) !important;
+}
+
+.management-tag {
+  background: var(--kgm-tag-bg) !important;
+  border-color: var(--kgm-tag-border) !important;
+  color: var(--kgm-tag-text) !important;
+}
+
+.management-edit-notice {
+  background: var(--kgm-edit-bg);
+  border-color: var(--kgm-edit-border) !important;
+  color: var(--kgm-edit-text);
+}
+
+.management-info-card {
+  background: var(--kgm-info-bg);
+  border-color: var(--kgm-info-border) !important;
+}
+
+.management-empty-state {
+  color: var(--kgm-label);
+}
+
+.management-empty-icon {
+  background: var(--kgm-empty-bg);
+  border-color: var(--kgm-empty-border) !important;
+}
+
+.management-graph-panel {
+  background: var(--kgm-graph-bg);
+}
+
+.management-loading-overlay {
+  background: var(--kgm-overlay-bg);
+}
+
+.management-loading-card {
+  background: var(--kgm-overlay-card-bg);
+  border-color: var(--kgm-overlay-card-border) !important;
+}
+
 /* Custom Scrollbar */
 .custom-scrollbar::-webkit-scrollbar {
   width: 6px;
@@ -806,27 +943,27 @@ onUnmounted(() => {
 
 /* Element Plus Overrides */
 .custom-select :deep(.el-input__wrapper) {
-  background-color: rgba(17, 24, 39, 0.8);
+  background-color: var(--kgm-input-bg);
   box-shadow: none !important;
-  border: 1px solid rgba(75, 85, 99, 0.4);
+  border: 1px solid var(--kgm-input-border);
   transition: all 0.3s;
 }
 .custom-select :deep(.el-input__wrapper:hover) {
-  border-color: rgba(107, 114, 128, 0.8);
-  background-color: rgba(31, 41, 55, 0.8);
+  border-color: var(--kgm-input-border-hover);
+  background-color: var(--kgm-input-bg);
 }
 .custom-select :deep(.el-input__wrapper.is-focus) {
   border-color: #06b6d4;
-  background-color: rgba(31, 41, 55, 1);
+  background-color: var(--kgm-input-focus-bg);
   box-shadow: 0 0 0 1px #06b6d4 !important;
 }
 .custom-select :deep(.el-input__inner) {
-  color: #e5e7eb;
+  color: var(--kgm-input-text);
   font-weight: 500;
 }
 
 .custom-form :deep(.el-form-item__label) {
-  color: #9ca3af;
+  color: var(--kgm-label);
   font-size: 0.75rem;
   padding-bottom: 4px;
   font-weight: 600;
@@ -834,16 +971,16 @@ onUnmounted(() => {
   letter-spacing: 0.05em;
 }
 .custom-form :deep(.el-input__wrapper) {
-  background-color: rgba(17, 24, 39, 0.6);
+  background-color: var(--kgm-input-bg);
   box-shadow: none;
-  border: 1px solid rgba(75, 85, 99, 0.4);
+  border: 1px solid var(--kgm-input-border);
   border-radius: 6px;
 }
 .custom-form :deep(.el-input__wrapper.is-focus) {
   border-color: #06b6d4;
-  background-color: rgba(17, 24, 39, 0.9);
+  background-color: var(--kgm-input-focus-bg);
 }
 .custom-form :deep(.el-input__inner) {
-  color: #e5e7eb;
+  color: var(--kgm-input-text);
 }
 </style>

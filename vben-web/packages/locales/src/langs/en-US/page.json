@@ -8,7 +8,8 @@
     "dashboard": "Overview",
     "preview": "Preview",
     "construct": "Construct",
-    "management": "Management"
+    "management": "Management",
+    "character": "AI Characters"
   },
   "system": {
     "title": "System Management",

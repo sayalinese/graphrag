@@ -1,5 +1,5 @@
 ﻿<template>
-  <div class="kg-graph2d relative h-full w-full overflow-hidden rounded-2xl">
+  <div class="kg-graph2d relative h-full w-full overflow-hidden rounded-2xl" @mouseenter="resumeGraph" @mouseleave="pauseGraphDeferred">
     <div ref="containerRef" class="absolute inset-0 z-0"></div>
     <div
       v-if="!hasGraphData"
@@ -12,7 +12,11 @@
 
 <script lang="ts" setup>
 import ForceGraph from 'force-graph';
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+
+const props = defineProps<{
+  graphData?: any;
+}>();
 
 interface GraphPayload {
   nodes?: any[];
@@ -71,6 +75,11 @@ const WAVE_DELAY = 220;
 const NODE_CLICK_PADDING = 10;
 const NODE_CLICK_MIN_RADIUS = 16;
 const NODE_DRAG_SUPPRESS_MS = 180;
+const ZOOM_FIT_PADDING_MIN = 8;
+const ZOOM_FIT_PADDING_MAX = 18;
+const ZOOM_FIT_PADDING_RATIO = 0.04;
+const PATH_LABEL_MIN_SCALE = 1.0;
+const GLOBAL_LABEL_MIN_SCALE = 1.85;
 
 const containerRef = ref<HTMLDivElement | null>(null);
 const renderedGraph = ref<NormalizedGraph>({ nodes: [], links: [] });
@@ -80,8 +89,14 @@ const visibleNodeIds = new Set<string>();
 const pathNodeIds = new Set<string>();
 const pathLinkIds = new Set<string>();
 const seedNodeIds = new Set<string>();
+const highDegreeNeighborIds = new Set<string>(); // 种子节点直连且度数>4
 const hoveredNodeIds = new Set<string>();
 const hoveredLinkIds = new Set<string>();
+
+// 三档节点半径
+const NODE_R_SEED = 10;    // 档位1：起始实体
+const NODE_R_HIGH  = 8;    // 档位2：直连高度节点
+const NODE_R_BASE  = 5;    // 档位3：其他节点
 
 const nodeOpacityMap = new Map<string, number>();
 const nodeScaleMap = new Map<string, number>();
@@ -89,6 +104,7 @@ const linkProgressMap = new Map<string, number>();
 
 let graph: any = null;
 let resizeObserver: ResizeObserver | null = null;
+let themeObserver: MutationObserver | null = null;
 let animationToken = 0;
 let rafId: number | null = null;
 let highlightActive = false;
@@ -302,16 +318,38 @@ function attemptZoomToFit(_reason: string, requestId = zoomRequestId) {
   if (!graph) return;
   if (requestId <= zoomAppliedId) return;
 
-  const graphData = graph.graphData?.() ?? { nodes: [] };
+  const graphData = graph.graphData?.() ?? { nodes: [], links: [] };
   const graphNodes = Array.isArray(graphData.nodes) ? graphData.nodes : [];
+  const graphLinks = Array.isArray(graphData.links) ? graphData.links : [];
   const idSet = new Set(graphNodes.map((n: any) => normalizeNodeId(n?.id)).filter(Boolean));
   const matched = Array.from(visibleNodeIds).filter((id) => idSet.has(id));
 
   zoomAppliedId = requestId;
   if (!matched.length) return;
 
-  const matchedSet = new Set(matched);
-  graph.zoomToFit(650, 70, (node: any) => matchedSet.has(normalizeNodeId(node?.id)));
+  // 计算有连接的节点集合，孤立节点不参与 zoomToFit 的 bounding box 计算
+  const connectedIds = new Set<string>();
+  graphLinks.forEach((link: any) => {
+    const src = normalizeNodeId(typeof link.source === 'object' ? link.source?.id : link.source);
+    const tgt = normalizeNodeId(typeof link.target === 'object' ? link.target?.id : link.target);
+    if (src) connectedIds.add(src);
+    if (tgt) connectedIds.add(tgt);
+  });
+  // 若没有任何边（纯节点图），退回全部可见节点
+  const fitIds = connectedIds.size > 0
+    ? new Set(matched.filter((id) => connectedIds.has(id)))
+    : new Set(matched);
+  if (!fitIds.size) return;
+
+  const containerSize = Math.min(
+    containerRef.value?.clientWidth || Number.POSITIVE_INFINITY,
+    containerRef.value?.clientHeight || Number.POSITIVE_INFINITY,
+  );
+  const fitPadding = Number.isFinite(containerSize)
+    ? Math.max(ZOOM_FIT_PADDING_MIN, Math.min(ZOOM_FIT_PADDING_MAX, Math.round(containerSize * ZOOM_FIT_PADDING_RATIO)))
+    : ZOOM_FIT_PADDING_MAX;
+
+  graph.zoomToFit(650, fitPadding, (node: any) => fitIds.has(normalizeNodeId(node?.id)));
 }
 
 function requestZoomToFit(reason: string, delayMs = 220) {
@@ -339,9 +377,11 @@ function toRgba(hexColor: string, alpha: number): string {
 }
 
 function nodeColor(node: ExplainNode): string {
-  if (node.isSeed) return '#22d3ee';
-  if (node.isPath) return '#60a5fa';
-  return '#64748b';
+  if (node.isSeed) return '#4ade80';           // 档位1：亮绿
+  const nodeId = normalizeNodeId(node.id);
+  if (highDegreeNeighborIds.has(nodeId)) return '#f59e0b'; // 档位2：琥珀橙
+  if (node.isPath) return '#60a5fa';           // 档位3（连通）：蓝色
+  return '#64748b';                            // 孤立节点：灰色
 }
 
 function getFontSize(globalScale: number, min = 10, max = 18) {
@@ -352,10 +392,10 @@ function getFontSize(globalScale: number, min = 10, max = 18) {
 
 function getNodeBaseRadius(node: any): number {
   const nodeId = normalizeNodeId(node?.id);
-  const isPath = pathNodeIds.has(nodeId) || Boolean(node?.isPath);
   const isSeed = seedNodeIds.has(nodeId) || Boolean(node?.isSeed);
-  const baseSize = Math.max(4, Math.min(10, 4 + Math.sqrt(Math.max(1, normalizeNumber(node?.value, 1)))));
-  return baseSize + (isPath ? 2.2 : 0) + (isSeed ? 1.6 : 0);
+  if (isSeed) return NODE_R_SEED;
+  if (highDegreeNeighborIds.has(nodeId)) return NODE_R_HIGH;
+  return NODE_R_BASE;
 }
 
 function getNodeRenderScale(node: any): number {
@@ -398,9 +438,13 @@ function paintNodePointerArea(node: any, color: string, ctx: CanvasRenderingCont
   ctx.restore();
 }
 
+function isDarkMode(): boolean {
+  return document.documentElement.classList.contains('dark');
+}
+
 function drawRelationLabel(ctx: CanvasRenderingContext2D, label: string, x: number, y: number, alpha: number, globalScale: number) {
   if (!label) return;
-  if (globalScale < 0.35) return;
+  if (globalScale < 1.0) return;
 
   const text = trimLabel(label, 24);
   const fontSize = getFontSize(globalScale, 10, 16);
@@ -415,12 +459,15 @@ function drawRelationLabel(ctx: CanvasRenderingContext2D, label: string, x: numb
 
   ctx.save();
   ctx.globalAlpha = Math.min(0.92, alpha + 0.06);
-  ctx.fillStyle = 'rgba(10, 25, 47, 0.84)';
-  ctx.fillRect(rectX, rectY, rectW, rectH);
-  ctx.strokeStyle = 'rgba(34, 211, 238, 0.45)';
-  ctx.lineWidth = 0.8;
-  ctx.strokeRect(rectX, rectY, rectW, rectH);
-  ctx.fillStyle = 'rgba(229, 231, 235, 0.95)';
+  const dark = isDarkMode();
+  if (dark) {
+    ctx.fillStyle = 'rgba(10, 25, 47, 0.84)';
+    ctx.fillRect(rectX, rectY, rectW, rectH);
+    ctx.strokeStyle = 'rgba(34, 211, 238, 0.45)';
+    ctx.lineWidth = 0.8;
+    ctx.strokeRect(rectX, rectY, rectW, rectH);
+  }
+  ctx.fillStyle = dark ? 'rgba(229, 231, 235, 0.95)' : 'rgba(15, 23, 42, 0.88)';
   ctx.textBaseline = 'middle';
   ctx.fillText(text, rectX + paddingX, y);
   ctx.restore();
@@ -559,12 +606,33 @@ function drawNode(node: any, ctx: CanvasRenderingContext2D, globalScale: number)
     ctx.stroke();
   }
 
-  if (globalScale >= 0.45) {
-    const fontSize = getFontSize(globalScale, 10, 18);
-    ctx.font = `600 ${fontSize}px sans-serif`;
-    ctx.fillStyle = `rgba(229, 231, 235, ${Math.min(1, opacity + 0.2)})`;
+  // LOD 标签：种子/档位2/悬停节点始终显示；普通连接节点放大后才显示
+  const isHighDegree = highDegreeNeighborIds.has(nodeId);
+  const showLabel =
+    isSeed ||
+    isHighDegree ||
+    isHoveredNode ||
+    (isPath && globalScale >= PATH_LABEL_MIN_SCALE) ||
+    globalScale >= GLOBAL_LABEL_MIN_SCALE;
+  if (showLabel && label) {
+    const prominent = isSeed || isHoveredNode;
+    const mid = isHighDegree && !prominent;
+    const trimmedLabel = trimLabel(label, prominent ? 20 : mid ? 16 : 12);
+    const fontSize = getFontSize(globalScale, prominent ? 11 : mid ? 10 : 9, prominent ? 15 : mid ? 13 : 13);
+    ctx.font = `${prominent ? '700' : mid ? '600' : '500'} ${fontSize}px sans-serif`;
+    const textX = node.x + (radius * scale) + 5;
+    const textY = node.y;
+    const dark = isDarkMode();
+    const labelAlpha = prominent ? Math.min(1, opacity + 0.3) : Math.min(0.85, opacity + 0.1);
+    ctx.fillStyle = dark
+      ? prominent
+        ? `rgba(226, 232, 240, ${labelAlpha})`
+        : `rgba(186, 200, 218, ${labelAlpha})`
+      : prominent
+        ? `rgba(15, 23, 42, ${labelAlpha})`
+        : `rgba(51, 65, 85, ${labelAlpha})`;
     ctx.textBaseline = 'middle';
-    ctx.fillText(label, node.x + (radius * scale) + 4, node.y);
+    ctx.fillText(trimmedLabel, textX, textY);
   }
 
   ctx.restore();
@@ -584,7 +652,7 @@ function initGraph() {
   const createGraph = ForceGraph as unknown as () => any;
 
   graph = createGraph()(containerRef.value)
-    .backgroundColor('#060d1d')
+    .backgroundColor('rgba(0,0,0,0)')
     .nodeId('id')
     .enableNodeDrag(true)
     .warmupTicks(70)
@@ -619,9 +687,9 @@ function initGraph() {
 
     // 这里调整大小
   try {
-    graph.d3Force('charge')?.strength?.(-340);
-    graph.d3Force('link')?.distance?.(180);
-    graph.d3VelocityDecay?.(0.2);
+    graph.d3Force('charge')?.strength?.(-120);
+    graph.d3Force('link')?.distance?.(72);
+    graph.d3VelocityDecay?.(0.28);
   } catch {}
 
   updateSize();
@@ -646,6 +714,7 @@ function applyRenderedGraph(graphData: NormalizedGraph, sourceTag: string, chain
   pathNodeIds.clear();
   pathLinkIds.clear();
   seedNodeIds.clear();
+  highDegreeNeighborIds.clear();
 
   graphData.nodes.forEach((node) => {
     visibleNodeIds.add(node.id);
@@ -655,6 +724,28 @@ function applyRenderedGraph(graphData: NormalizedGraph, sourceTag: string, chain
   graphData.links.forEach((link) => {
     if (link.isPath) pathLinkIds.add(link.id);
   });
+
+  // 计算每个节点在当前视图内的度数，找出种子节点的直连且度数 > 4 的邻居（档位2）
+  // Tier 2：整张图中度数 > 4 的非 seed 节点（枢纽节点，不限是否为直接邻居）
+  // 兜底：若无节点满足阈值（小图场景），则取所有非 seed 节点中度数最高的前3个
+  const degreeMap = new Map<string, number>();
+  graphData.links.forEach((link) => {
+    degreeMap.set(link.sourceId, (degreeMap.get(link.sourceId) ?? 0) + 1);
+    degreeMap.set(link.targetId, (degreeMap.get(link.targetId) ?? 0) + 1);
+  });
+  graphData.nodes.forEach((node) => {
+    if (!seedNodeIds.has(node.id) && (degreeMap.get(node.id) ?? 0) > 4) {
+      highDegreeNeighborIds.add(node.id);
+    }
+  });
+  // 兜底：小图中无节点满足 > 4，则从非 seed 节点里按度数取前3
+  if (highDegreeNeighborIds.size === 0 && graphData.nodes.length > 1) {
+    graphData.nodes
+      .filter((n) => !seedNodeIds.has(n.id))
+      .sort((a, b) => (degreeMap.get(b.id) ?? 0) - (degreeMap.get(a.id) ?? 0))
+      .slice(0, 3)
+      .forEach((n) => highDegreeNeighborIds.add(n.id));
+  }
 
   if (!graph) return;
 
@@ -668,6 +759,8 @@ function applyRenderedGraph(graphData: NormalizedGraph, sourceTag: string, chain
   refreshGraph();
 
   requestZoomToFit(`apply:${sourceTag}`, 260);
+  resumeGraph();
+  pauseGraphDeferred();
   console.info('[Explain2D]', {
     phase: 'render',
     source: sourceTag,
@@ -727,9 +820,14 @@ function setGraphData(payload: GraphPayload) {
   clearHoverHighlight();
   clearHighlight();
   const normalized = normalizeGraphPayload(payload);
+  const seedId = normalized.nodes[0]?.id;
   const annotated: NormalizedGraph = {
-    nodes: normalized.nodes.map((node) => ({ ...node, isPath: false, isSeed: false })),
-    links: normalized.links.map((link) => ({ ...link, isPath: false })),
+    nodes: normalized.nodes.map((node) => ({
+      ...node,
+      isPath: true,
+      isSeed: node.id === seedId,
+    })),
+    links: normalized.links.map((link) => ({ ...link, isPath: true })),
   };
   applyRenderedGraph(annotated, 'setGraphData');
 }
@@ -856,10 +954,53 @@ function computeDepthMap(links: ExplainLink[], seeds: string[], maxDepth: number
 
 onMounted(() => {
   initGraph();
+
+  // 监听主题切换，触发重绘（标签颜色在每帧内实时读取 isDarkMode，这里强制重绘一帧）
+  themeObserver = new MutationObserver(() => {
+    if (graph) graph.refresh();
+  });
+  themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
 });
+
+watch(() => props.graphData, (newVal) => {
+  if (newVal) {
+    const nodes = newVal.entities || newVal.nodes || [];
+    const links = newVal.relations || newVal.edges || newVal.links || [];
+    if (nodes.length > 0 || links.length > 0) {
+      setGraphData({ nodes, links });
+    }
+  }
+}, { deep: true, immediate: true });
+
+let animationPauseTimer: number | null = null;
+
+function resumeGraph() {
+  if (animationPauseTimer !== null) {
+    window.clearTimeout(animationPauseTimer);
+    animationPauseTimer = null;
+  }
+  if (graph) {
+    graph.resumeAnimation();
+  }
+}
+
+function pauseGraphDeferred() {
+  if (animationPauseTimer !== null) {
+    window.clearTimeout(animationPauseTimer);
+  }
+  animationPauseTimer = window.setTimeout(() => {
+    if (graph) {
+      graph.pauseAnimation();
+    }
+  }, 5000);
+}
 
 onBeforeUnmount(() => {
   clearAnimation();
+  if (themeObserver) {
+    themeObserver.disconnect();
+    themeObserver = null;
+  }
   if (resizeObserver) {
     resizeObserver.disconnect();
     resizeObserver = null;
@@ -881,9 +1022,6 @@ defineExpose({
 
 <style scoped>
 .kg-graph2d {
-  background:
-    radial-gradient(circle at 20% 10%, rgba(56, 189, 248, 0.08), transparent 35%),
-    radial-gradient(circle at 80% 80%, rgba(14, 116, 144, 0.12), transparent 40%),
-    #060d1d;
+  background: transparent;
 }
 </style>

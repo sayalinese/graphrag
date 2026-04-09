@@ -84,6 +84,7 @@ let particleAutoRotateActive = true;
 let currentAnimationId = 0;
 let graphLimitFetchTimer: null | ReturnType<typeof setTimeout> = null;
 let focusZoomTimer: null | ReturnType<typeof setTimeout> = null;
+let themeObserver: MutationObserver | null = null;
 
 // 图谱数据缓存（使用 sessionStorage）
 const GRAPH_CACHE_KEY = 'kg_graph_cache';
@@ -161,6 +162,46 @@ function setGraphCache(
 function clearGraphCache(): void {
   sessionStorage.removeItem(GRAPH_CACHE_KEY);
   console.warn('[Graph Cache] 缓存已清除');
+}
+
+function isDarkMode() {
+  return typeof document !== 'undefined' && document.documentElement.classList.contains('dark');
+}
+
+function getGraphBackgroundColor() {
+  return isDarkMode() ? '#0b1220' : '#f4f7fb';
+}
+
+function buildLinkTooltip(link: GraphEdge) {
+  const dark = isDarkMode();
+  const desc = link.description || '';
+  const source =
+    typeof link.source === 'object'
+      ? (link.source as any).label
+      : link.source;
+  const target =
+    typeof link.target === 'object'
+      ? (link.target as any).label
+      : link.target;
+  const cardBg = dark ? 'rgba(15, 23, 42, 0.92)' : 'rgba(255, 255, 255, 0.96)';
+  const cardBorder = dark ? 'rgba(71, 85, 105, 0.72)' : 'rgba(148, 163, 184, 0.35)';
+  const titleColor = dark ? '#67e8f9' : '#0369a1';
+  const textColor = dark ? '#cbd5e1' : '#334155';
+  const metaColor = dark ? '#94a3b8' : '#64748b';
+  const dividerColor = dark ? 'rgba(71, 85, 105, 0.6)' : 'rgba(203, 213, 225, 0.8)';
+  const shadow = dark ? '0 16px 32px rgba(2, 6, 23, 0.42)' : '0 16px 32px rgba(15, 23, 42, 0.12)';
+
+  return `
+				<div style="padding:10px 12px;background:${cardBg};border:1px solid ${cardBorder};border-radius:10px;box-shadow:${shadow};backdrop-filter:blur(10px);font-size:12px;">
+					<div style="font-weight:700;color:${titleColor};margin-bottom:4px;">${link.label}</div>
+					${desc && desc !== link.label ? `<div style="color:${textColor};margin-bottom:4px;max-width:200px;white-space:normal;line-height:1.5;">${desc}</div>` : ''}
+					<div style="color:${metaColor};margin-top:4px;padding-top:4px;border-top:1px solid ${dividerColor};display:flex;gap:4px;align-items:center;">
+						<span style="max-width:80px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${source}</span>
+						<span>→</span>
+						<span style="max-width:80px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${target}</span>
+					</div>
+				</div>
+			`;
 }
 
 // 高亮状�?
@@ -1096,6 +1137,7 @@ function updateGraphData() {
   graphInstance.graphData({ nodes: nodeCopies, links: linkCopies });
   refreshNodeAppearance();
   refreshLinkAppearance();
+  graphInstance.resumeAnimation?.();
 }
 
 function refreshNodeAppearance() {
@@ -1224,11 +1266,34 @@ function applyAutoRotate(enabled: boolean) {
   if (!graphInstance) return;
   const controls = graphInstance.controls?.() as
     | undefined
-    | { autoRotate?: boolean; autoRotateSpeed?: number; update?: () => void };
+    | {
+        autoRotate?: boolean;
+        autoRotateSpeed?: number;
+        enableDamping?: boolean;
+        dampingFactor?: number;
+        enableRotate?: boolean;
+        enableZoom?: boolean;
+        enablePan?: boolean;
+        update?: () => void;
+      };
   if (!controls) return;
+  controls.enableRotate = true;
+  controls.enableZoom = true;
+  controls.enablePan = true;
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.08;
   controls.autoRotate = enabled;
   controls.autoRotateSpeed = 0.8;
   controls.update?.();
+  graphInstance.resumeAnimation?.();
+}
+
+function refreshThemeAppearance() {
+  if (!graphInstance) return;
+  graphInstance.backgroundColor(getGraphBackgroundColor());
+  refreshNodeAppearance();
+  refreshLinkAppearance();
+  graphInstance.refresh();
 }
 
 function updateGraphSize() {
@@ -1244,34 +1309,13 @@ function initForceGraph() {
   const factory = ForceGraph3D as unknown as () => any;
   const instance = factory();
   instance(containerRef.value)
-    .backgroundColor('#0b1220')
+    .backgroundColor(getGraphBackgroundColor())
     .nodeId('id')
+    .enableNodeDrag(false)
     .nodeLabel((node: GraphNode) => node.label)
     .nodeColor((node: GraphNode) => getNodeColor(node))
     .nodeOpacity((node: GraphNode) => getNodeOpacity(node))
-    .linkLabel((link: GraphEdge) => {
-      const desc = link.description || '';
-      const source =
-        typeof link.source === 'object'
-          ? (link.source as any).label
-          : link.source;
-      const target =
-        typeof link.target === 'object'
-          ? (link.target as any).label
-          : link.target;
-
-      return `
-				<div class="p-2 bg-gray-900/90 rounded border border-gray-700 shadow-xl backdrop-blur-sm text-xs">
-					<div class="font-bold text-cyan-400 mb-1">${link.label}</div>
-					${desc && desc !== link.label ? `<div class="text-gray-300 mb-1 max-w-[200px] whitespace-normal">${desc}</div>` : ''}
-					<div class="text-gray-500 mt-1 pt-1 border-t border-gray-700/50 flex items-center gap-1">
-						<span class="truncate max-w-[80px]">${source}</span>
-						<span>�?/span>
-						<span class="truncate max-w-[80px]">${target}</span>
-					</div>
-				</div>
-			`;
-    })
+    .linkLabel((link: GraphEdge) => buildLinkTooltip(link))
     .linkOpacity(0.35)
     .linkColor((link: GraphEdge) => getLinkColor(link))
     .warmupTicks(60)
@@ -1293,6 +1337,7 @@ function initForceGraph() {
   applyLinkStyles();
   applyForceSettings();
   applyAutoRotate(props.autoRotate);
+  graphInstance.resumeAnimation?.();
   updateGraphSize();
   setupParticleBackground();
   window.addEventListener('resize', updateGraphSize);
@@ -1399,6 +1444,7 @@ function handleReset() {
     { x: 0, y: 0, z: 0 },
     1000,
   );
+  applyAutoRotate(props.autoRotate);
 }
 // 强制刷新图谱数据（清除缓存并重新获取）
 function handleRefresh() {
@@ -1474,11 +1520,22 @@ onMounted(async () => {
     ElMessage.error('3D 引擎初始化失败');
     return;
   }
+
+  themeObserver = new MutationObserver(() => {
+    refreshThemeAppearance();
+  });
+  themeObserver.observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: ['class'],
+  });
+
   await fetchGraphData();
 });
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', updateGraphSize);
+  themeObserver?.disconnect();
+  themeObserver = null;
   if (graphLimitFetchTimer) {
     clearTimeout(graphLimitFetchTimer);
     graphLimitFetchTimer = null;
@@ -1625,7 +1682,7 @@ defineExpose({
 </script>
 
 <template>
-  <div class="relative h-full w-full">
+  <div class="preview-graph relative h-full w-full">
     <div
       ref="containerRef"
       class="graph-container"
@@ -1636,7 +1693,7 @@ defineExpose({
     <Transition name="fade">
       <div
         v-if="loading"
-        class="absolute inset-0 z-50 flex flex-col items-center justify-center bg-gray-900/90 backdrop-blur-md"
+        class="preview-graph__loading absolute inset-0 z-50 flex flex-col items-center justify-center backdrop-blur-md"
       >
         <!-- Tech Spinner -->
         <div class="loading-spinner mb-6">
@@ -1644,9 +1701,7 @@ defineExpose({
           <div class="spinner-ring ring-2"></div>
           <div class="spinner-core"></div>
         </div>
-        <div
-          class="animate-pulse text-sm font-medium tracking-wider text-cyan-400"
-        >
+        <div class="preview-graph__loading-text animate-pulse text-sm font-medium tracking-wider">
           正在构建知识图谱...
         </div>
       </div>
@@ -1656,19 +1711,19 @@ defineExpose({
     <Transition name="slide-up">
       <div
         v-if="selectedNode"
-        class="absolute bottom-5 left-5 z-30 min-w-[220px] max-w-[320px] rounded-xl border border-cyan-500/30 bg-[#0b1a2e]/90 px-5 py-4 shadow-[0_0_24px_rgba(34,211,238,0.15)] backdrop-blur-md"
+        class="preview-graph__node-card absolute bottom-5 left-5 z-30 min-w-[220px] max-w-[320px] rounded-xl border px-5 py-4 backdrop-blur-md"
       >
         <div class="mb-2 flex items-center justify-between">
-          <span class="text-xs font-semibold uppercase tracking-widest text-cyan-400">选中节点</span>
+          <span class="preview-graph__node-card-label text-xs font-semibold uppercase tracking-widest">选中节点</span>
           <button
-            class="text-slate-500 transition hover:text-cyan-300"
+            class="preview-graph__node-card-close transition"
             @click="selectedNode = null"
           >✕</button>
         </div>
-        <div class="mb-1 truncate text-base font-bold text-white">{{ selectedNode.label || selectedNode.id }}</div>
-        <div v-if="selectedNode.category" class="mb-2 inline-block rounded-full bg-cyan-900/60 px-2 py-0.5 text-xs text-cyan-300">{{ selectedNode.category }}</div>
-        <div class="mt-1 text-xs text-slate-400">
-          相邻节点数：<span class="text-cyan-200 font-medium">{{ hoveredNodeIds.size > 1 ? hoveredNodeIds.size - 1 : 0 }}</span>
+        <div class="preview-graph__node-card-title mb-1 truncate text-base font-bold">{{ selectedNode.label || selectedNode.id }}</div>
+        <div v-if="selectedNode.category" class="preview-graph__node-card-tag mb-2 inline-block rounded-full px-2 py-0.5 text-xs">{{ selectedNode.category }}</div>
+        <div class="preview-graph__node-card-meta mt-1 text-xs">
+          相邻节点数：<span class="preview-graph__node-card-value font-medium">{{ hoveredNodeIds.size > 1 ? hoveredNodeIds.size - 1 : 0 }}</span>
         </div>
       </div>
     </Transition>
@@ -1676,12 +1731,12 @@ defineExpose({
     <Transition name="fade">
       <div
         v-if="isGraphEmpty"
-        class="pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center bg-[radial-gradient(circle_at_center,rgba(8,145,178,0.14),rgba(11,18,32,0.94)_55%)] text-center"
+        class="preview-graph__empty pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center text-center"
       >
-        <div class="mb-3 text-lg font-semibold tracking-wide text-cyan-300">
+        <div class="preview-graph__empty-title mb-3 text-lg font-semibold tracking-wide">
           当前数据库暂无可展示图谱
         </div>
-        <div class="max-w-md px-6 text-sm leading-6 text-slate-400">
+        <div class="preview-graph__empty-text max-w-md px-6 text-sm leading-6">
           可以切换数据库、放宽筛选条件，或先执行图谱构建后再查看预览
         </div>
       </div>
@@ -1690,10 +1745,98 @@ defineExpose({
 </template>
 
 <style scoped>
+:global(:root) {
+  --kgpg-card-bg: rgba(255, 255, 255, 0.92);
+  --kgpg-card-border: rgba(14, 165, 233, 0.2);
+  --kgpg-card-shadow: 0 20px 44px rgba(15, 23, 42, 0.14);
+  --kgpg-card-title: #0f172a;
+  --kgpg-card-meta: #64748b;
+  --kgpg-card-value: #0369a1;
+  --kgpg-card-tag-bg: rgba(14, 165, 233, 0.12);
+  --kgpg-card-tag-text: #0369a1;
+  --kgpg-card-close: #64748b;
+  --kgpg-card-close-hover: #0f172a;
+  --kgpg-empty-bg: radial-gradient(circle at center, rgba(14, 165, 233, 0.08), rgba(244, 247, 251, 0.96) 58%);
+  --kgpg-empty-title: #0369a1;
+  --kgpg-empty-text: #64748b;
+  --kgpg-loading-bg: rgba(241, 245, 249, 0.82);
+  --kgpg-loading-text: #0369a1;
+}
+
+:global(.dark) {
+  --kgpg-card-bg: rgba(11, 26, 46, 0.9);
+  --kgpg-card-border: rgba(34, 211, 238, 0.3);
+  --kgpg-card-shadow: 0 0 24px rgba(34, 211, 238, 0.15);
+  --kgpg-card-title: #ffffff;
+  --kgpg-card-meta: #94a3b8;
+  --kgpg-card-value: #bae6fd;
+  --kgpg-card-tag-bg: rgba(8, 47, 73, 0.6);
+  --kgpg-card-tag-text: #67e8f9;
+  --kgpg-card-close: #64748b;
+  --kgpg-card-close-hover: #67e8f9;
+  --kgpg-empty-bg: radial-gradient(circle at center, rgba(8, 145, 178, 0.14), rgba(11, 18, 32, 0.94) 55%);
+  --kgpg-empty-title: #67e8f9;
+  --kgpg-empty-text: #94a3b8;
+  --kgpg-loading-bg: rgba(17, 24, 39, 0.9);
+  --kgpg-loading-text: #22d3ee;
+}
+
 .graph-container {
   width: 100%;
   height: 100%;
-  background-color: #0b1220;
+  background-color: transparent;
+}
+
+.preview-graph__loading {
+  background: var(--kgpg-loading-bg);
+}
+
+.preview-graph__loading-text,
+.preview-graph__node-card-label {
+  color: var(--kgpg-loading-text);
+}
+
+.preview-graph__node-card {
+  background: var(--kgpg-card-bg);
+  border-color: var(--kgpg-card-border) !important;
+  box-shadow: var(--kgpg-card-shadow);
+}
+
+.preview-graph__node-card-title {
+  color: var(--kgpg-card-title);
+}
+
+.preview-graph__node-card-tag {
+  background: var(--kgpg-card-tag-bg);
+  color: var(--kgpg-card-tag-text);
+}
+
+.preview-graph__node-card-meta {
+  color: var(--kgpg-card-meta);
+}
+
+.preview-graph__node-card-value {
+  color: var(--kgpg-card-value);
+}
+
+.preview-graph__node-card-close {
+  color: var(--kgpg-card-close);
+}
+
+.preview-graph__node-card-close:hover {
+  color: var(--kgpg-card-close-hover);
+}
+
+.preview-graph__empty {
+  background: var(--kgpg-empty-bg);
+}
+
+.preview-graph__empty-title {
+  color: var(--kgpg-empty-title);
+}
+
+.preview-graph__empty-text {
+  color: var(--kgpg-empty-text);
 }
 
 .cursor-wait {

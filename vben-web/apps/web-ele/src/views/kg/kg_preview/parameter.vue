@@ -144,16 +144,16 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="w-80 h-full overflow-y-auto p-4 flex flex-col text-gray-200 bg-gray-900/80 backdrop-blur-sm">
+  <div class="preview-parameter w-80 h-full overflow-y-auto p-4 flex flex-col backdrop-blur-sm">
     <!-- 标题 -->
-    <div class="flex justify-between items-center mb-6 pb-4 border-b border-gray-700/50">
+    <div class="parameter-header flex justify-between items-center mb-6 pb-4 border-b">
       <div class="flex items-center gap-2">
         <el-icon class="text-lg text-cyan-400"><Operation /></el-icon>
-        <span class="font-semibold text-base tracking-wide">控制面板</span>
+        <span class="parameter-title font-semibold text-base tracking-wide">控制面板</span>
       </div>
       <ElTooltip content="折叠面板" placement="bottom">
         <button 
-          class="p-1.5 rounded-md hover:bg-gray-800 text-gray-400 hover:text-white transition-colors"
+          class="parameter-close-btn p-1.5 rounded-md transition-colors"
           @click="$emit('close')"
         >
           <el-icon class="text-lg"><Fold /></el-icon>
@@ -193,8 +193,8 @@ onMounted(() => {
     </div> -->
 
     <!-- 数据库筛选 -->
-    <div class="mb-6 group rounded-xl border border-cyan-500/15 bg-cyan-500/5 p-3">
-      <label class="text-cyan-300 text-xs font-medium mb-2 block uppercase tracking-wider">数据库</label>
+    <div class="parameter-focus-card mb-6 group rounded-xl border p-3">
+      <label class="parameter-focus-label text-xs font-medium mb-2 block uppercase tracking-wider">数据库</label>
       <ElSelect
         v-model="localState.selectedDatabase"
         class="style-select w-full"
@@ -217,7 +217,7 @@ onMounted(() => {
 
     <!-- 搜索 -->
     <div class="mb-6 group">
-      <label class="text-gray-400 text-xs font-medium mb-2 block uppercase tracking-wider group-focus-within:text-cyan-400 transition-colors">搜索节点</label>
+      <label class="parameter-label text-xs font-medium mb-2 block uppercase tracking-wider group-focus-within:text-cyan-400 transition-colors">搜索节点</label>
       <ElInput
         v-model="localState.searchKeyword"
         placeholder="输入节点名称..."
@@ -231,7 +231,7 @@ onMounted(() => {
 
     <!-- 分类 -->
     <div class="mb-6 group">
-      <label class="text-gray-400 text-xs font-medium mb-2 block uppercase tracking-wider group-focus-within:text-cyan-400 transition-colors">节点分类</label>
+      <label class="parameter-label text-xs font-medium mb-2 block uppercase tracking-wider group-focus-within:text-cyan-400 transition-colors">节点分类</label>
       <ElSelect
         v-model="localState.selectedCategory"
         class="style-select w-full"
@@ -253,8 +253,8 @@ onMounted(() => {
     <!-- 图谱加载上限 -->
     <div class="mb-6">
       <div class="flex justify-between items-center mb-3">
-        <label class="text-gray-400 text-xs font-medium uppercase tracking-wider">图谱加载上限</label>
-        <span class="text-cyan-400 text-xs font-mono bg-cyan-500/10 px-2 py-0.5 rounded">{{ localState.graphLimit }}</span>
+        <label class="parameter-label text-xs font-medium uppercase tracking-wider">图谱加载上限</label>
+        <span class="parameter-value-chip text-xs font-mono px-2 py-0.5 rounded">{{ localState.graphLimit }}</span>
       </div>
       <input
         v-model.number="localState.graphLimit"
@@ -264,15 +264,15 @@ onMounted(() => {
         step="100"
         class="w-full h-1.5 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-cyan-500"
       />
-      <p class="mt-2 text-xs text-gray-500">建议 500~2000，过大可能导致 3D 渲染卡顿</p>
+      <p class="parameter-hint mt-2 text-xs">建议 500~2000，过大可能导致 3D 渲染卡顿</p>
     </div>
 
     <!-- 显示选项 -->
-    <div class="mb-6 p-4 bg-gray-800/30 rounded-xl border border-gray-700/30">
-      <h3 class="text-gray-400 text-xs font-medium mb-3 uppercase tracking-wider">显示选项</h3>
+    <div class="parameter-section-card mb-6 p-4 rounded-xl border">
+      <h3 class="parameter-label text-xs font-medium mb-3 uppercase tracking-wider">显示选项</h3>
       <div class="space-y-3">
         <label class="flex items-center justify-between text-gray-300 text-sm cursor-pointer group">
-          <span class="group-hover:text-white transition-colors">显示标签</span>
+          <span class="parameter-option-text transition-colors">显示标签</span>
           <div class="relative inline-flex items-center cursor-pointer">
             <input v-model="localState.showLabels" type="checkbox" class="sr-only peer">
             <div class="w-9 h-5 bg-gray-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-cyan-600"></div>
@@ -280,28 +280,28 @@ onMounted(() => {
         </label>
 
         <label class="flex items-center justify-between text-gray-300 text-sm cursor-pointer group">
-          <span class="group-hover:text-white transition-colors">显示连接</span>
+          <span class="parameter-option-text transition-colors">显示连接</span>
           <div class="relative inline-flex items-center cursor-pointer">
             <input v-model="localState.showEdges" type="checkbox" class="sr-only peer">
             <div class="w-9 h-5 bg-gray-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-cyan-600"></div>
           </div>
         </label>
 
-        <!-- <label class="flex items-center justify-between text-gray-300 text-sm cursor-pointer group">
-          <span class="group-hover:text-white transition-colors">自动旋转</span>
+        <label class="flex items-center justify-between text-gray-300 text-sm cursor-pointer group">
+          <span class="parameter-option-text transition-colors">自动旋转</span>
           <div class="relative inline-flex items-center cursor-pointer">
             <input v-model="localState.autoRotate" type="checkbox" class="sr-only peer">
             <div class="w-9 h-5 bg-gray-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-cyan-600"></div>
           </div>
-        </label> -->
+        </label>
       </div>
     </div>
 
     <!-- 节点大小 -->
     <div class="mb-6">
       <div class="flex justify-between items-center mb-3">
-        <label class="text-gray-400 text-xs font-medium uppercase tracking-wider">节点大小</label>
-        <span class="text-cyan-400 text-xs font-mono bg-cyan-500/10 px-2 py-0.5 rounded">{{ localState.nodeSize.toFixed(1) }}x</span>
+        <label class="parameter-label text-xs font-medium uppercase tracking-wider">节点大小</label>
+        <span class="parameter-value-chip text-xs font-mono px-2 py-0.5 rounded">{{ localState.nodeSize.toFixed(1) }}x</span>
       </div>
       <input
         v-model.number="localState.nodeSize"
@@ -314,28 +314,28 @@ onMounted(() => {
     </div>
 
     <!-- 统计 -->
-    <div class="mb-6 p-4 bg-gradient-to-br from-gray-800/50 to-gray-900/50 rounded-xl border border-gray-700/50">
+    <div class="parameter-stats-card mb-6 p-4 rounded-xl border">
       <div class="flex items-center gap-2 mb-3">
         <el-icon class="text-cyan-400"><Connection /></el-icon>
-        <p class="text-gray-300 text-sm font-medium">图谱统计</p>
+        <p class="parameter-title text-sm font-medium">图谱统计</p>
       </div>
       <div class="grid grid-cols-2 gap-3">
-        <div class="bg-gray-800/50 p-2 rounded border border-gray-700/30">
-          <div class="text-gray-500 text-xs mb-1">节点总数</div>
+        <div class="parameter-stat-box p-2 rounded border">
+          <div class="parameter-hint text-xs mb-1">节点总数</div>
           <div class="text-cyan-400 font-mono text-lg leading-none">{{ props.nodeCount ?? '--' }}</div>
         </div>
-        <div class="bg-gray-800/50 p-2 rounded border border-gray-700/30">
-          <div class="text-gray-500 text-xs mb-1">关系总数</div>
+        <div class="parameter-stat-box p-2 rounded border">
+          <div class="parameter-hint text-xs mb-1">关系总数</div>
           <div class="text-purple-400 font-mono text-lg leading-none">{{ props.edgeCount ?? '--' }}</div>
         </div>
       </div>
     </div>
 
     <!-- 按钮 -->
-    <div class="mt-auto pt-4 border-t border-gray-700/50">
+    <div class="parameter-footer mt-auto pt-4 border-t">
       <button
         @click="handleReset"
-        class="w-full px-4 py-2.5 text-sm font-medium text-white bg-gray-700 hover:bg-gray-600 rounded-lg transition-colors flex items-center justify-center gap-2"
+        class="parameter-reset-btn w-full px-4 py-2.5 text-sm font-medium rounded-lg transition-colors flex items-center justify-center gap-2"
       >
         <el-icon><RefreshLeft /></el-icon>
         重置视图
@@ -346,6 +346,133 @@ onMounted(() => {
 </template>
 
 <style scoped>
+:global(:root) {
+  --kgpp-panel-bg: rgba(255, 255, 255, 0.78);
+  --kgpp-panel-text: #334155;
+  --kgpp-title: #0f172a;
+  --kgpp-border: rgba(148, 163, 184, 0.2);
+  --kgpp-muted: #64748b;
+  --kgpp-hint: #94a3b8;
+  --kgpp-focus-bg: rgba(14, 165, 233, 0.05);
+  --kgpp-focus-border: rgba(14, 165, 233, 0.18);
+  --kgpp-focus-label: #0f766e;
+  --kgpp-section-bg: rgba(248, 250, 252, 0.8);
+  --kgpp-section-border: rgba(148, 163, 184, 0.16);
+  --kgpp-chip-bg: rgba(14, 165, 233, 0.08);
+  --kgpp-chip-text: #0369a1;
+  --kgpp-reset-bg: rgba(51, 65, 85, 0.92);
+  --kgpp-reset-hover: rgba(30, 41, 59, 0.96);
+  --kgpp-close-color: #64748b;
+  --kgpp-close-hover-bg: rgba(148, 163, 184, 0.14);
+  --kgpp-close-hover-color: #0f172a;
+  --kgpp-input-bg: rgba(255, 255, 255, 0.86);
+  --kgpp-input-border: rgba(148, 163, 184, 0.36);
+  --kgpp-input-text: #0f172a;
+  --kgpp-input-placeholder: #94a3b8;
+  --kgpp-dropdown-bg: #ffffff;
+  --kgpp-dropdown-border: #dbe2ea;
+  --kgpp-dropdown-item: #334155;
+  --kgpp-dropdown-item-active: #0f172a;
+  --kgpp-dropdown-item-bg: rgba(59, 130, 246, 0.08);
+}
+
+:global(.dark) {
+  --kgpp-panel-bg: rgba(17, 24, 39, 0.8);
+  --kgpp-panel-text: #e5e7eb;
+  --kgpp-title: #f8fafc;
+  --kgpp-border: rgba(55, 65, 81, 0.6);
+  --kgpp-muted: #9ca3af;
+  --kgpp-hint: #6b7280;
+  --kgpp-focus-bg: rgba(6, 182, 212, 0.08);
+  --kgpp-focus-border: rgba(6, 182, 212, 0.15);
+  --kgpp-focus-label: #67e8f9;
+  --kgpp-section-bg: rgba(31, 41, 55, 0.3);
+  --kgpp-section-border: rgba(55, 65, 81, 0.3);
+  --kgpp-chip-bg: rgba(6, 182, 212, 0.1);
+  --kgpp-chip-text: #22d3ee;
+  --kgpp-reset-bg: #374151;
+  --kgpp-reset-hover: #4b5563;
+  --kgpp-close-color: #9ca3af;
+  --kgpp-close-hover-bg: rgba(31, 41, 55, 0.8);
+  --kgpp-close-hover-color: #ffffff;
+  --kgpp-input-bg: rgba(31, 41, 55, 0.5);
+  --kgpp-input-border: rgba(75, 85, 99, 0.5);
+  --kgpp-input-text: #f3f4f6;
+  --kgpp-input-placeholder: #6b7280;
+  --kgpp-dropdown-bg: #1f2937;
+  --kgpp-dropdown-border: #374151;
+  --kgpp-dropdown-item: #d1d5db;
+  --kgpp-dropdown-item-active: #ffffff;
+  --kgpp-dropdown-item-bg: #374151;
+}
+
+.preview-parameter {
+  background: var(--kgpp-panel-bg);
+  color: var(--kgpp-panel-text);
+  border-right: 1px solid var(--kgpp-border);
+}
+
+.parameter-header,
+.parameter-footer {
+  border-color: var(--kgpp-border) !important;
+}
+
+.parameter-title {
+  color: var(--kgpp-title);
+}
+
+.parameter-close-btn {
+  color: var(--kgpp-close-color);
+}
+
+.parameter-close-btn:hover {
+  background: var(--kgpp-close-hover-bg);
+  color: var(--kgpp-close-hover-color);
+}
+
+.parameter-focus-card {
+  background: var(--kgpp-focus-bg);
+  border-color: var(--kgpp-focus-border) !important;
+}
+
+.parameter-focus-label {
+  color: var(--kgpp-focus-label);
+}
+
+.parameter-label,
+.parameter-hint {
+  color: var(--kgpp-muted);
+}
+
+.parameter-section-card,
+.parameter-stats-card,
+.parameter-stat-box {
+  background: var(--kgpp-section-bg);
+  border-color: var(--kgpp-section-border) !important;
+}
+
+.parameter-value-chip {
+  background: var(--kgpp-chip-bg);
+  color: var(--kgpp-chip-text);
+}
+
+.parameter-option-text {
+  color: var(--kgpp-panel-text);
+}
+
+.group:hover .parameter-option-text {
+  color: var(--kgpp-title);
+}
+
+.parameter-reset-btn {
+  background: var(--kgpp-reset-bg);
+  color: #ffffff;
+}
+
+.parameter-reset-btn:hover {
+  background: var(--kgpp-reset-hover);
+}
+
 input[type="range"]::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
@@ -365,11 +492,11 @@ input[type="range"]::-webkit-slider-thumb:hover {
 
 .style-select :deep(.el-input__wrapper) {
   padding: 4px 12px;
-  background: rgba(31, 41, 55, 0.5);
-  border: 1px solid rgba(75, 85, 99, 0.5);
+  background: var(--kgpp-input-bg);
+  border: 1px solid var(--kgpp-input-border);
   border-radius: 0.5rem;
   box-shadow: none;
-  color: #f3f4f6;
+  color: var(--kgpp-input-text);
 }
 
 .style-select :deep(.el-input__wrapper.is-focus) {
@@ -382,18 +509,22 @@ input[type="range"]::-webkit-slider-thumb:hover {
   font-size: 0.875rem;
 }
 
-.style-select-dropdown {
-  background: #1f2937 !important;
-  border: 1px solid #374151 !important;
+.style-select :deep(.el-input__inner::placeholder) {
+  color: var(--kgpp-input-placeholder);
 }
 
-.style-select-dropdown .el-select-dropdown__item {
-  color: #d1d5db;
+:global(.style-select-dropdown) {
+  background: var(--kgpp-dropdown-bg) !important;
+  border: 1px solid var(--kgpp-dropdown-border) !important;
 }
 
-.style-select-dropdown .el-select-dropdown__item.hover,
-.style-select-dropdown .el-select-dropdown__item.selected {
-  background: #374151;
-  color: #fff;
+:global(.style-select-dropdown .el-select-dropdown__item) {
+  color: var(--kgpp-dropdown-item);
+}
+
+:global(.style-select-dropdown .el-select-dropdown__item.hover),
+:global(.style-select-dropdown .el-select-dropdown__item.selected) {
+  background: var(--kgpp-dropdown-item-bg);
+  color: var(--kgpp-dropdown-item-active);
 }
 </style>

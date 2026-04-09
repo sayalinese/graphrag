@@ -18,12 +18,17 @@ export interface NodeStyleContext {
 
 export type NodeStyleRenderer = (context: NodeStyleContext) => any;
 
+function isDarkMode() {
+  return typeof document !== 'undefined' && document.documentElement.classList.contains('dark');
+}
+
 function createLabel(nodeLabel: string, radius: number, categoryColor: string) {
+  const dark = isDarkMode();
   const label = new SpriteText(nodeLabel);
-  label.color = '#f4f8ff';
+  label.color = dark ? '#f4f8ff' : '#0f172a';
   label.textHeight = 10;
-  label.backgroundColor = 'rgba(12, 24, 48, 0.78)';
-  label.borderColor = `${categoryColor}CC`;
+  label.backgroundColor = dark ? 'rgba(12, 24, 48, 0.78)' : 'rgba(255, 255, 255, 0.84)';
+  label.borderColor = dark ? `${categoryColor}CC` : `${categoryColor}88`;
   label.borderWidth = 1.2;
   label.padding = [4, 8];
   label.fontWeight = '600';

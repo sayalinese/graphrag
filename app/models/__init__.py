@@ -7,4 +7,5 @@ from .character import Character
 from .knowledge_base import KnowledgeBase, Document, DocumentChunk
 from .kg_mapping import KGMapping
 from .menu_config import MenuConfig
+from .expert_config import ExpertConfig
 

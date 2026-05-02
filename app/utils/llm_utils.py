@@ -89,9 +89,9 @@ class DeepSeekLLM:
         self.model = model
         self.api_base = api_base
         try:
-            request_timeout = float(os.getenv('LLM_REQUEST_TIMEOUT', '20'))
+            request_timeout = float(os.getenv('LLM_REQUEST_TIMEOUT', '60'))
         except Exception:
-            request_timeout = 20.0
+            request_timeout = 60.0
         try:
             max_retries = int(os.getenv('LLM_MAX_RETRIES', '1'))
         except Exception:
@@ -232,13 +232,29 @@ RIVAL_OF（对手）、CREATED_BY（创造）、HAS_ABILITY（拥有能力）等
         )
         return f"{system_prompt}\n\n{default_system}" if system_prompt else default_system
 
-    def generate_answer(self, query: str, context: str, system_prompt: str = None) -> str:
+    @staticmethod
+    def _build_multimodal_content(text: str, images: Optional[List[str]] = None) -> Union[str, list]:
+        """构建 OpenAI 多模态 content（纯文本或 text+image_url 数组）
+
+        images 中的每一项应为 base64 data-URL，如:
+            data:image/jpeg;base64,/9j/4AAQ...
+        """
+        if not images:
+            return text
+        content: list = [{"type": "text", "text": text}]
+        for img_url in images:
+            content.append({"type": "image_url", "image_url": {"url": img_url}})
+        return content
+
+    def generate_answer(self, query: str, context: str, system_prompt: str = None,
+                        images: Optional[List[str]] = None) -> str:
         """
         基于上下文生成答案
         
         Args:
             query: 用户查询
             context: 上下文信息
+            images: 可选的 base64 data-URL 图片列表（多模态）
         
         Returns:
             生成的答案
@@ -246,9 +262,10 @@ RIVAL_OF（对手）、CREATED_BY（创造）、HAS_ABILITY（拥有能力）等
         try:
             from langchain_core.messages import HumanMessage, SystemMessage
 
+            user_text = f"上下文信息：\n{context}\n\n用户问题：\n{query}"
             messages = [
                 SystemMessage(content=self._build_answer_system_prompt(system_prompt)),
-                HumanMessage(content=f"上下文信息：\n{context}\n\n用户问题：\n{query}"),
+                HumanMessage(content=self._build_multimodal_content(user_text, images)),
             ]
             response = self.llm.invoke(messages)
 
@@ -257,13 +274,19 @@ RIVAL_OF（对手）、CREATED_BY（创造）、HAS_ABILITY（拥有能力）等
             logger.error(f"答案生成失败: {e}")
             return "抱歉，生成答案时出错。"
 
-    def generate_answer_stream(self, query: str, context: str, system_prompt: str = None) -> Generator[str, None, None]:
-        """基于上下文流式生成答案，逐 token 产出文本片段"""
+    def generate_answer_stream(self, query: str, context: str, system_prompt: str = None,
+                                images: Optional[List[str]] = None) -> Generator[str, None, None]:
+        """基于上下文流式生成答案，逐 token 产出文本片段
+
+        Args:
+            images: 可选的 base64 data-URL 图片列表（多模态）
+        """
         from langchain_core.messages import HumanMessage, SystemMessage
         try:
+            user_text = f"上下文信息：\n{context}\n\n用户问题：\n{query}"
             messages = [
                 SystemMessage(content=self._build_answer_system_prompt(system_prompt)),
-                HumanMessage(content=f"上下文信息：\n{context}\n\n用户问题：\n{query}"),
+                HumanMessage(content=self._build_multimodal_content(user_text, images)),
             ]
             for chunk in self.llm.stream(messages):
                 token = chunk.content if hasattr(chunk, 'content') else str(chunk)
@@ -309,3 +332,49 @@ RIVAL_OF（对手）、CREATED_BY（创造）、HAS_ABILITY（拥有能力）等
                 "entities": [],
                 "question_type": "unknown"
             }
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 模型选择工厂
+# ──────────────────────────────────────────────────────────────────────────────
+
+# 内置模型配置（可通过 .env 覆盖）
+_MODEL_REGISTRY = {
+    "siliconflow": {
+        "api_key":  lambda: os.getenv("DEEPSEEK_API_KEY", ""),
+        "api_base": lambda: os.getenv("DEEPSEEK_API_BASE", "https://api.siliconflow.cn/v1"),
+        "model":    lambda: os.getenv("DEEPSEEK_MODEL", "Qwen/Qwen3.5-122B-A10B"),
+        "label":    "Qwen3.5-122B · SiliconFlow",
+    },
+    "ollama": {
+        "api_key":  lambda: os.getenv("OLLAMA_API_KEY", "ollama"),
+        "api_base": lambda: os.getenv("OLLAMA_API_BASE", "http://localhost:11434/v1"),
+        "model":    lambda: os.getenv("OLLAMA_MODEL", "qwen3:27b"),
+        "label":    "Qwen3:27B · 本地 Ollama",
+    },
+}
+
+
+def build_llm_by_key(model_key: str) -> "DeepSeekLLM":
+    """根据 model_key 构建对应的 DeepSeekLLM 实例。
+
+    Args:
+        model_key: 模型标识，如 'siliconflow' | 'ollama'
+                   未知 key 则回退到 'siliconflow'
+    Returns:
+        DeepSeekLLM 实例
+    """
+    cfg = _MODEL_REGISTRY.get(model_key) or _MODEL_REGISTRY["siliconflow"]
+    return DeepSeekLLM(
+        api_key=cfg["api_key"](),
+        model=cfg["model"](),
+        api_base=cfg["api_base"](),
+    )
+
+
+def list_available_models() -> list:
+    """返回前端可展示的模型列表"""
+    return [
+        {"key": k, "label": v["label"]}
+        for k, v in _MODEL_REGISTRY.items()
+    ]

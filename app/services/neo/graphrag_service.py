@@ -5,7 +5,7 @@ import json
 import re
 from contextlib import contextmanager
 from contextvars import ContextVar
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeoutError
 
 from neo4j import GraphDatabase
 from langchain_community.vectorstores import PGVector
@@ -720,6 +720,7 @@ class GraphRAGService:
 
         # 1. 第一阶段召回：并行执行向量检索和实体匹配（两者相互独立）
         candidate_k = max(top_k * 3, 30)
+        _RETRIEVAL_TIMEOUT = 60  # 单项检索 60s 超时
         with ThreadPoolExecutor(max_workers=2) as executor:
             future_chunks = executor.submit(
                 self._vector_search_chunks, question, candidate_k,
@@ -728,8 +729,16 @@ class GraphRAGService:
             future_entities = executor.submit(
                 self._match_entities_from_question, question, doc_id=doc_id
             )
-        vector_candidates = future_chunks.result()
-        matched_entities = future_entities.result()
+        try:
+            vector_candidates = future_chunks.result(timeout=_RETRIEVAL_TIMEOUT)
+        except (FuturesTimeoutError, Exception) as e:
+            logger.warning(f"Vector search timed out or failed ({e}), using empty results")
+            vector_candidates = []
+        try:
+            matched_entities = future_entities.result(timeout=_RETRIEVAL_TIMEOUT)
+        except (FuturesTimeoutError, Exception) as e:
+            logger.warning(f"Entity matching timed out or failed ({e}), using empty results")
+            matched_entities = []
         
         # 2. 从向量命中节点展开实体
         #    路径 A（文本语料库）：Chunk -[:MENTIONS]-> Entity
@@ -2616,13 +2625,15 @@ class GraphRAGService:
         expert_role: str,
         task_instruction: str,
         system_prompt: str = None,
+        llm=None,
     ) -> str:
         """使用流式调用收集专家回答，避免 request_timeout 在长回答时触发超时。
 
         相比 .invoke()（受 request_timeout 限制总耗时），.stream() 的超时只
         作用于首 token 到达前的等待时间，生成过程不受限制，因此不会卡死。
         """
-        if not self.llm:
+        _llm = llm if llm is not None else self.llm
+        if not _llm:
             raise RuntimeError("LLM not initialized")
 
         expert_system_prompt = self._merge_system_prompts(
@@ -2644,7 +2655,7 @@ class GraphRAGService:
 请直接输出分析结果。"""
         # 使用流式收集，避免同步 invoke 被 request_timeout 杀死
         tokens = []
-        for token in self.llm.generate_answer_stream(expert_query, context, system_prompt=expert_system_prompt):
+        for token in _llm.generate_answer_stream(expert_query, context, system_prompt=expert_system_prompt):
             tokens.append(token)
         result = ''.join(tokens)
         if not result.strip():
@@ -2675,6 +2686,8 @@ class GraphRAGService:
         database: str = None,
         system_prompt: str = None,
         expert_mode: str = "standard",
+        images: list = None,
+        llm_override=None,
     ):
         """混合搜索流式版本 - 生成 SSE 事件字符串序列
 
@@ -2684,12 +2697,16 @@ class GraphRAGService:
         每个 yield 都是完整的 SSE 行，格式为:
             data: <json>\\n\\n
         """
+        # 若调用方指定了 llm_override（按模型 key 构建），则在本次请求使用该实例
+        _llm = llm_override if llm_override is not None else self.llm
+
         enhanced_question = self._build_question_with_history(question, chat_history or [])
 
         if strategy == "auto":
             strategy = self._determine_search_strategy(question)
 
         # --- 检索阶段（不调 LLM）---
+        yield self._build_sse_event({"type": "heartbeat"})
         try:
             local_result = self.local_search(
                 enhanced_question, top_k=top_k, doc_id=doc_id, database=database,
@@ -2702,6 +2719,9 @@ class GraphRAGService:
 
         context = local_result.pop('_context', '') or ''
         structured_fallback = local_result.pop('_structured_fallback', '') or ''
+
+        # 检索完成心跳，防止代理因长时间无数据而断连
+        yield self._build_sse_event({"type": "heartbeat"})
 
         # 1. 先推送元数据（实体 / 关系 / chunks / strategy_used）
         metadata_payload = {
@@ -2718,7 +2738,7 @@ class GraphRAGService:
         def _stream_standard_answer():
             total_tokens = 0
             try:
-                for token in self.llm.generate_answer_stream(enhanced_question, context, system_prompt=system_prompt):
+                for token in _llm.generate_answer_stream(enhanced_question, context, system_prompt=system_prompt, images=images):
                     total_tokens += 1
                     yield self._build_sse_event({"type": "token", "token": token})
             except Exception as exc:
@@ -2730,122 +2750,109 @@ class GraphRAGService:
                 yield self._build_sse_event({"type": "token", "token": structured_fallback})
 
         # 2. 流式 LLM 生成
-        if self.llm and context:
+        if _llm and context:
             if expert_mode == "multi":
-                expert_stage_titles = {
-                    "evidence": "证据专家",
-                    "pathology": "病理专家",
-                    "reviewer": "审稿专家",
-                    "synthesis": "综合专家",
+                # 从数据库加载专家配置，失败时回退到默认值
+                _EXPERT_DEFAULTS = {
+                    "evidence": {
+                        "title": "证据专家",
+                        "description": (
+                            "提炼与用户问题直接相关的事实证据、实体关系、原文片段和可验证依据。"
+                            "优先回答'图谱里明确能支持什么'，避免过早下结论。"
+                        ),
+                        "running_detail": "正在提取与问题最直接相关的证据链...",
+                        "enabled": True,
+                        "order": 1,
+                    },
+                    "pathology": {
+                        "title": "病理专家",
+                        "description": (
+                            "从病理/领域专家视角解释上述证据意味着什么。"
+                            "需要指出诊断价值、分类依据、风险提示或临床边界。"
+                        ),
+                        "running_detail": "正在从领域角度解释证据含义...",
+                        "enabled": True,
+                        "order": 2,
+                    },
+                    "reviewer": {
+                        "title": "审稿专家",
+                        "description": (
+                            "审查前面专家的结论是否严格被检索上下文支持。"
+                            "指出冲突、推断过度和仍需补充的信息。"
+                        ),
+                        "running_detail": "正在检查证据与结论是否一致...",
+                        "enabled": True,
+                        "order": 3,
+                    },
                 }
+                try:
+                    from app.models.expert_config import ExpertConfig
+                    db_configs = ExpertConfig.query.order_by(ExpertConfig.order).all()
+                    expert_cfg = {
+                        c.key: {
+                            "title": c.title,
+                            "description": c.description,
+                            "running_detail": c.running_detail,
+                            "enabled": c.enabled,
+                            "order": c.order,
+                        }
+                        for c in db_configs if c.enabled
+                    }
+                    if not expert_cfg:
+                        raise ValueError("no enabled experts in db")
+                except Exception as _cfg_err:
+                    logger.warning(f"Failed to load expert configs from DB, using defaults: {_cfg_err}")
+                    expert_cfg = {k: v for k, v in _EXPERT_DEFAULTS.items() if v["enabled"]}
+
+                expert_stage_titles = {k: v["title"] for k, v in expert_cfg.items()}
+                expert_stage_titles["synthesis"] = "综合专家"
+
                 synthesis_tokens = 0
                 expert_outputs = {}  # 收集各专家输出，失败的跳过
 
-                # --- 证据专家 ---
-                yield self._build_sse_event({
-                    "type": "expert_stage",
-                    "stage_key": "evidence",
-                    "title": expert_stage_titles["evidence"],
-                    "status": "running",
-                    "detail": "正在提取与问题最直接相关的证据链...",
-                })
-                try:
-                    evidence_answer = self._run_multi_expert_answer(
-                        enhanced_question,
-                        context,
-                        expert_stage_titles["evidence"],
-                        "提炼与用户问题直接相关的事实证据、实体关系、原文片段和可验证依据。"
-                        "优先回答'图谱里明确能支持什么'，避免过早下结论。",
-                        system_prompt=system_prompt,
+                # --- 按 order 顺序依次运行各专家 ---
+                ordered_keys = sorted(expert_cfg.keys(), key=lambda k: expert_cfg[k]["order"])
+                for stage_key in ordered_keys:
+                    cfg = expert_cfg[stage_key]
+                    # 审稿专家使用包含前序专家输出的增强上下文
+                    stage_context = (
+                        self._build_multi_expert_context(context, expert_outputs)
+                        if stage_key == "reviewer"
+                        else context
                     )
-                    expert_outputs["evidence"] = evidence_answer
                     yield self._build_sse_event({
                         "type": "expert_stage",
-                        "stage_key": "evidence",
-                        "title": expert_stage_titles["evidence"],
-                        "status": "done",
-                        "detail": self._compact_expert_detail(evidence_answer),
+                        "stage_key": stage_key,
+                        "title": cfg["title"],
+                        "status": "running",
+                        "detail": cfg["running_detail"],
                     })
-                except Exception as e:
-                    logger.warning(f"Expert [evidence] failed: {e}")
-                    yield self._build_sse_event({
-                        "type": "expert_stage",
-                        "stage_key": "evidence",
-                        "title": expert_stage_titles["evidence"],
-                        "status": "error",
-                        "detail": f"证据专家分析超时或异常，已跳过。({type(e).__name__})",
-                    })
-
-                # --- 病理专家 ---
-                yield self._build_sse_event({
-                    "type": "expert_stage",
-                    "stage_key": "pathology",
-                    "title": expert_stage_titles["pathology"],
-                    "status": "running",
-                    "detail": "正在从领域角度解释证据含义...",
-                })
-                try:
-                    pathology_answer = self._run_multi_expert_answer(
-                        enhanced_question,
-                        context,
-                        expert_stage_titles["pathology"],
-                        "从病理/领域专家视角解释上述证据意味着什么。"
-                        "需要指出诊断价值、分类依据、风险提示或临床边界。",
-                        system_prompt=system_prompt,
-                    )
-                    expert_outputs["pathology"] = pathology_answer
-                    yield self._build_sse_event({
-                        "type": "expert_stage",
-                        "stage_key": "pathology",
-                        "title": expert_stage_titles["pathology"],
-                        "status": "done",
-                        "detail": self._compact_expert_detail(pathology_answer),
-                    })
-                except Exception as e:
-                    logger.warning(f"Expert [pathology] failed: {e}")
-                    yield self._build_sse_event({
-                        "type": "expert_stage",
-                        "stage_key": "pathology",
-                        "title": expert_stage_titles["pathology"],
-                        "status": "error",
-                        "detail": f"病理专家分析超时或异常，已跳过。({type(e).__name__})",
-                    })
-
-                # --- 审稿专家（基于已成功的专家输出）---
-                reviewer_context = self._build_multi_expert_context(context, expert_outputs)
-                yield self._build_sse_event({
-                    "type": "expert_stage",
-                    "stage_key": "reviewer",
-                    "title": expert_stage_titles["reviewer"],
-                    "status": "running",
-                    "detail": "正在检查证据与结论是否一致...",
-                })
-                try:
-                    reviewer_answer = self._run_multi_expert_answer(
-                        enhanced_question,
-                        reviewer_context,
-                        expert_stage_titles["reviewer"],
-                        "审查前面专家的结论是否严格被检索上下文支持。"
-                        "指出冲突、推断过度和仍需补充的信息。",
-                        system_prompt=system_prompt,
-                    )
-                    expert_outputs["reviewer"] = reviewer_answer
-                    yield self._build_sse_event({
-                        "type": "expert_stage",
-                        "stage_key": "reviewer",
-                        "title": expert_stage_titles["reviewer"],
-                        "status": "done",
-                        "detail": self._compact_expert_detail(reviewer_answer),
-                    })
-                except Exception as e:
-                    logger.warning(f"Expert [reviewer] failed: {e}")
-                    yield self._build_sse_event({
-                        "type": "expert_stage",
-                        "stage_key": "reviewer",
-                        "title": expert_stage_titles["reviewer"],
-                        "status": "error",
-                        "detail": f"审稿专家分析超时或异常，已跳过。({type(e).__name__})",
-                    })
+                    try:
+                        answer = self._run_multi_expert_answer(
+                            enhanced_question,
+                            stage_context,
+                            cfg["title"],
+                            cfg["description"],
+                            system_prompt=system_prompt,
+                            llm=_llm,
+                        )
+                        expert_outputs[stage_key] = answer
+                        yield self._build_sse_event({
+                            "type": "expert_stage",
+                            "stage_key": stage_key,
+                            "title": cfg["title"],
+                            "status": "done",
+                            "detail": self._compact_expert_detail(answer),
+                        })
+                    except Exception as e:
+                        logger.warning(f"Expert [{stage_key}] failed: {e}")
+                        yield self._build_sse_event({
+                            "type": "expert_stage",
+                            "stage_key": stage_key,
+                            "title": cfg["title"],
+                            "status": "error",
+                            "detail": f"{cfg['title']}分析超时或异常，已跳过。({type(e).__name__})",
+                        })
 
                 # --- 综合专家（流式输出最终回答）---
                 synthesis_context = self._build_multi_expert_context(context, expert_outputs)
@@ -2875,7 +2882,7 @@ class GraphRAGService:
 
                 try:
                     synthesis_parts = []
-                    for token in self.llm.generate_answer_stream(
+                    for token in _llm.generate_answer_stream(
                         synthesis_query,
                         synthesis_context,
                         system_prompt=synthesis_system_prompt,

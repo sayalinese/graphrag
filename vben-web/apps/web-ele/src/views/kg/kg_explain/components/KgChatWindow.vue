@@ -67,8 +67,15 @@
 
       </div>
 
-      <div v-if="!isSidebarCollapsed" class="px-4 pb-2 text-xs font-medium uppercase tracking-[0.24em] text-slate-500">
-        历史会话
+      <div v-if="!isSidebarCollapsed" class="flex items-center justify-between px-4 pb-2 text-xs font-medium uppercase tracking-[0.24em] text-slate-500">
+        <span>历史会话</span>
+        <button 
+          class="flex items-center justify-center p-1 rounded-md transition-colors hover:bg-slate-100 hover:text-sky-500 dark:hover:bg-slate-800 dark:hover:text-sky-400" 
+          title="新增对话"
+          @click="createNewSession"
+        >
+          <el-icon class="text-sm"><Plus /></el-icon>
+        </button>
       </div>
 
       <ElScrollbar class="flex-1" :class="isSidebarCollapsed ? 'px-2' : 'px-3'">
@@ -162,6 +169,16 @@
               <div
                 class="user-bubble px-4 py-2.5 text-sm leading-relaxed"
               >
+                <!-- 用户上传的图片 -->
+                <div v-if="message.images?.length" class="mb-2 flex flex-wrap gap-1.5">
+                  <img
+                    v-for="(img, idx) in message.images"
+                    :key="idx"
+                    :src="img"
+                    class="h-20 w-20 rounded-lg object-cover cursor-pointer border border-white/20"
+                    @click="previewImage(img)"
+                  />
+                </div>
                 {{ message.content }}
               </div>
               <div
@@ -305,7 +322,7 @@
                     <div class="welcome-intake-action__hint">适合先补齐年龄、主诉、用药和检查资料，再自动发起一次更聚焦的诊断问答。</div>
                   </div>
 
-                  <div v-if="hasMessageGraph(message.id)" class="inline-graph-card">
+                  <div v-if="isMessageGraphPreviewVisible(message.id)" class="inline-graph-card">
                     <div class="inline-graph-card__header">
                       <div class="inline-graph-card__title">可解释图谱</div>
                       <div class="inline-graph-card__meta">
@@ -318,153 +335,143 @@
                     </div>
                   </div>
 
-                  <!-- 底部元数据栏 -->
-                  <div class="ft-divider mt-4 flex flex-wrap items-center gap-3 border-t pt-3">
-                    <!-- 策略标签 -->
+                  <!-- 引用区域：只有实体/关系/片段非空时才出现，带入场动画 -->
+                  <Transition name="ref-section">
                     <div
-                      v-if="message.strategy"
-                      class="meta-badge flex items-center gap-1.5 rounded border px-2 py-1"
+                      v-if="message.entities?.length || message.relations?.length || message.chunks?.length"
+                      class="ref-section-wrap mt-4"
                     >
-                      <el-icon class="text-xs text-slate-500"><Operation /></el-icon>
-                      <span class="text-xs font-medium" :class="getStrategyColorClass(message.strategy)">
-                        {{ getStrategyLabel(message.strategy) }}
-                      </span>
-                    </div>
-
-                    <div
-                      v-if="message.sourceLabel"
-                      class="meta-badge flex items-center gap-1.5 rounded border px-2 py-1"
-                    >
-                      <span class="text-xs font-medium text-sky-500 dark:text-sky-300">
-                        {{ message.sourceLabel }}
-                      </span>
-                    </div>
-                    
-                    <div
-                      v-if="message.communities_used"
-                      class="meta-badge flex items-center gap-1.5 rounded border px-2 py-1"
-                    >
-                      <el-icon class="text-xs"><Connection /></el-icon>
-                      <span class="text-xs">
-                        {{ message.communities_used }} 个社区
-                      </span>
-                    </div>
-                  </div>
-
-                  <!-- 附加信息折叠面板 -->
-                  <div
-                    v-if="
-                      message.entities?.length ||
-                      message.relations?.length ||
-                      message.chunks?.length
-                    "
-                    class="mt-3 space-y-2"
-                  >
-                    <!-- 相关实体 -->
-                    <div v-if="message.entities?.length" class="collapse-panel overflow-hidden rounded-lg border">
-                      <button 
-                        class="panel-toggle-btn flex w-full items-center justify-between px-3 py-2 text-xs font-medium transition-colors"
-                        @click="toggleCollapse(message.id, 'entities')"
-                      >
-                        <div class="flex items-center gap-2">
-                          <el-icon class="text-cyan-400"><DataBoard /></el-icon>
-                          <span>相关实体 ({{ message.entities.length }})</span>
+                      <!-- 底部元数据栏 -->
+                      <div class="ft-divider flex flex-wrap items-center gap-3 border-t pt-3 mb-3">
+                        <!-- 策略标签 -->
+                        <div
+                          v-if="message.strategy"
+                          class="meta-badge flex items-center gap-1.5 rounded border px-2 py-1"
+                        >
+                          <el-icon class="text-xs text-slate-500"><Operation /></el-icon>
+                          <span class="text-xs font-medium" :class="getStrategyColorClass(message.strategy)">
+                            {{ getStrategyLabel(message.strategy) }}
+                          </span>
                         </div>
-                        <el-icon class="transition-transform duration-200" :class="{ 'rotate-180': !isCollapsed(message.id, 'entities') }"><ArrowDown /></el-icon>
-                      </button>
-                      
-                      <div v-show="!isCollapsed(message.id, 'entities')" class="panel-content border-t px-3 pb-3 pt-1">
-                        <div class="flex flex-wrap gap-1.5">
-                          <button
-                            v-for="entity in message.entities.slice(0, 20)"
-                            :key="entity.name"
-                            class="entity-chip flex items-center gap-1 rounded border px-2 py-1 text-xs transition-colors"
-                            @click="handleEntityClick(entity)"
-                          >
-                            {{ entity.name }}
-                            <span v-if="entity.type" class="chip-type text-[10px]">
-                              {{ entity.type }}
-                            </span>
-                          </button>
-                          <button
-                            v-if="message.entities.length > 0"
-                            class="ml-1 flex items-center gap-1 rounded px-2 py-1 text-xs text-sky-600 transition-colors hover:bg-sky-50 hover:text-sky-700 dark:text-sky-300 dark:hover:bg-sky-950/25 dark:hover:text-sky-100"
-                            @click="handleHighlightEntities(message.entities!)"
-                          >
-                            <el-icon><Aim /></el-icon>
-                            选择调用节点
-                          </button>
+
+                        <div
+                          v-if="message.sourceLabel"
+                          class="meta-badge flex items-center gap-1.5 rounded border px-2 py-1"
+                        >
+                          <span class="text-xs font-medium text-sky-500 dark:text-sky-300">
+                            {{ message.sourceLabel }}
+                          </span>
+                        </div>
+
+                        <div
+                          v-if="message.communities_used"
+                          class="meta-badge flex items-center gap-1.5 rounded border px-2 py-1"
+                        >
+                          <el-icon class="text-xs"><Connection /></el-icon>
+                          <span class="text-xs">{{ message.communities_used }} 个社区</span>
                         </div>
                       </div>
-                    </div>
 
-                    <!-- 实体关系 -->
-                    <div v-if="message.relations?.length" class="collapse-panel overflow-hidden rounded-lg border">
-                      <button 
-                        class="panel-toggle-btn flex w-full items-center justify-between px-3 py-2 text-xs font-medium transition-colors"
-                        @click="toggleCollapse(message.id, 'relations')"
-                      >
-                        <div class="flex items-center gap-2">
-                          <el-icon class="text-sky-400"><Share /></el-icon>
-                          <span>实体关系 ({{ message.relations.length }})</span>
-                        </div>
-                        <el-icon class="transition-transform duration-200" :class="{ 'rotate-180': !isCollapsed(message.id, 'relations') }"><ArrowDown /></el-icon>
-                      </button>
-                      
-                      <div v-show="!isCollapsed(message.id, 'relations')" class="panel-content border-t px-3 pb-3 pt-1">
-                        <div class="space-y-1.5">
-                          <div
-                            v-for="(rel, idx) in message.relations.slice(0, 15)"
-                            :key="idx"
-                            class="rel-row flex items-center gap-2 rounded px-2 py-1.5 text-xs"
+                      <!-- 折叠面板列表 -->
+                      <div class="space-y-2">
+                        <!-- 相关实体 -->
+                        <div v-if="message.entities?.length" class="collapse-panel overflow-hidden rounded-lg border">
+                          <button
+                            class="panel-toggle-btn flex w-full items-center justify-between px-3 py-2 text-xs font-medium transition-colors"
+                            @click="toggleCollapse(message.id, 'entities')"
                           >
-                            <span class="rel-src flex-shrink-0 font-medium">{{ rel.source }}</span>
-                            <el-icon class="text-[10px] flex-shrink-0 opacity-40"><ArrowRight /></el-icon>
-                            <span class="rel-badge max-w-[200px] truncate rounded border px-1.5 py-0.5 text-[10px]" :title="rel.description || rel.type">
-                              {{ rel.description || rel.type }}
-                            </span>
-                            <el-icon class="text-[10px] flex-shrink-0 opacity-40"><ArrowRight /></el-icon>
-                            <span class="rel-src flex-shrink-0 font-medium">{{ rel.target }}</span>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-
-                    <!-- 原文片段 -->
-                    <div v-if="message.chunks?.length" class="collapse-panel overflow-hidden rounded-lg border">
-                      <button 
-                        class="panel-toggle-btn flex w-full items-center justify-between px-3 py-2 text-xs font-medium transition-colors"
-                        @click="toggleCollapse(message.id, 'chunks')"
-                      >
-                        <div class="flex items-center gap-2">
-                          <el-icon class="text-yellow-500"><Document /></el-icon>
-                          <span>原文片段 ({{ message.chunks.length }})</span>
-                        </div>
-                        <el-icon class="transition-transform duration-200" :class="{ 'rotate-180': !isCollapsed(message.id, 'chunks') }"><ArrowDown /></el-icon>
-                      </button>
-                      
-                      <div v-show="!isCollapsed(message.id, 'chunks')" class="panel-content border-t px-3 pb-3 pt-1">
-                        <div class="space-y-2">
-                          <div
-                            v-for="(chunk, idx) in message.chunks.slice(0, 5)"
-                            :key="idx"
-                            class="chunk-card rounded border p-2.5 text-xs transition-colors"
-                          >
-                            <div
-                              v-if="chunk.score"
-                              class="chunk-divider mb-1.5 flex items-center justify-between border-b pb-1.5"
-                            >
-                              <span class="text-[10px] text-slate-500">片段 #{{ idx + 1 }}</span>
-                              <span class="text-[10px] font-mono text-sky-400/80">
-                                Score: {{ (chunk.score as number).toFixed(3) }}
-                              </span>
+                            <div class="flex items-center gap-2">
+                              <el-icon class="text-cyan-400"><DataBoard /></el-icon>
+                              <span>相关实体 ({{ message.entities.length }})</span>
                             </div>
-                            <div class="line-clamp-3 leading-relaxed opacity-90">{{ chunk.text }}</div>
+                            <el-icon class="transition-transform duration-200" :class="{ 'rotate-180': !isCollapsed(message.id, 'entities') }"><ArrowDown /></el-icon>
+                          </button>
+                          <div v-show="!isCollapsed(message.id, 'entities')" class="panel-content border-t px-3 pb-3 pt-1">
+                            <div class="flex flex-wrap gap-1.5">
+                              <button
+                                v-for="entity in message.entities.slice(0, 20)"
+                                :key="entity.name"
+                                class="entity-chip flex items-center gap-1 rounded border px-2 py-1 text-xs transition-colors"
+                                @click="handleEntityClick(message.id, entity)"
+                              >
+                                {{ entity.name }}
+                                <span v-if="entity.type" class="chip-type text-[10px]">{{ entity.type }}</span>
+                              </button>
+                              <button
+                                v-if="message.entities.length > 0"
+                                class="ml-1 flex items-center gap-1 rounded px-2 py-1 text-xs text-sky-600 transition-colors hover:bg-sky-50 hover:text-sky-700 dark:text-sky-300 dark:hover:bg-sky-950/25 dark:hover:text-sky-100"
+                                @click="handleHighlightEntities(message.id, message.entities!)"
+                              >
+                                <el-icon><Aim /></el-icon>
+                                选择调用节点
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+
+                        <!-- 实体关系 -->
+                        <div v-if="message.relations?.length" class="collapse-panel overflow-hidden rounded-lg border">
+                          <button
+                            class="panel-toggle-btn flex w-full items-center justify-between px-3 py-2 text-xs font-medium transition-colors"
+                            @click="toggleCollapse(message.id, 'relations')"
+                          >
+                            <div class="flex items-center gap-2">
+                              <el-icon class="text-sky-400"><Share /></el-icon>
+                              <span>实体关系 ({{ message.relations.length }})</span>
+                            </div>
+                            <el-icon class="transition-transform duration-200" :class="{ 'rotate-180': !isCollapsed(message.id, 'relations') }"><ArrowDown /></el-icon>
+                          </button>
+                          <div v-show="!isCollapsed(message.id, 'relations')" class="panel-content border-t px-3 pb-3 pt-1">
+                            <div class="space-y-1.5">
+                              <div
+                                v-for="(rel, idx) in message.relations.slice(0, 15)"
+                                :key="idx"
+                                class="rel-row flex items-center gap-2 rounded px-2 py-1.5 text-xs"
+                              >
+                                <span class="rel-src flex-shrink-0 font-medium">{{ rel.source }}</span>
+                                <el-icon class="text-[10px] flex-shrink-0 opacity-40"><ArrowRight /></el-icon>
+                                <span class="rel-badge max-w-[200px] truncate rounded border px-1.5 py-0.5 text-[10px]" :title="rel.description || rel.type">{{ rel.description || rel.type }}</span>
+                                <el-icon class="text-[10px] flex-shrink-0 opacity-40"><ArrowRight /></el-icon>
+                                <span class="rel-src flex-shrink-0 font-medium">{{ rel.target }}</span>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+
+                        <!-- 原文片段 -->
+                        <div v-if="message.chunks?.length" class="collapse-panel overflow-hidden rounded-lg border">
+                          <button
+                            class="panel-toggle-btn flex w-full items-center justify-between px-3 py-2 text-xs font-medium transition-colors"
+                            @click="toggleCollapse(message.id, 'chunks')"
+                          >
+                            <div class="flex items-center gap-2">
+                              <el-icon class="text-yellow-500"><Document /></el-icon>
+                              <span>原文片段 ({{ message.chunks.length }})</span>
+                            </div>
+                            <el-icon class="transition-transform duration-200" :class="{ 'rotate-180': !isCollapsed(message.id, 'chunks') }"><ArrowDown /></el-icon>
+                          </button>
+                          <div v-show="!isCollapsed(message.id, 'chunks')" class="panel-content border-t px-3 pb-3 pt-1">
+                            <div class="space-y-2">
+                              <div
+                                v-for="(chunk, idx) in message.chunks.slice(0, 5)"
+                                :key="idx"
+                                class="chunk-card rounded border p-2.5 text-xs transition-colors"
+                              >
+                                <div
+                                  v-if="chunk.score"
+                                  class="chunk-divider mb-1.5 flex items-center justify-between border-b pb-1.5"
+                                >
+                                  <span class="text-[10px] text-slate-500">片段 #{{ idx + 1 }}</span>
+                                  <span class="text-[10px] font-mono text-sky-400/80">Score: {{ (chunk.score as number).toFixed(3) }}</span>
+                                </div>
+                                <div class="line-clamp-3 leading-relaxed opacity-90">{{ chunk.text }}</div>
+                              </div>
+                            </div>
                           </div>
                         </div>
                       </div>
                     </div>
-                  </div>
+                  </Transition>
                 </template>
               </div>
 
@@ -492,108 +499,144 @@
       </div>
         </ElScrollbar>
 
-        <div
-          class="chat-input px-5 py-4 border-t backdrop-blur-sm"
-        >
+        <div class="chat-input px-5 py-4 border-t backdrop-blur-sm">
           <div class="chat-main-inner">
-            <div class="input-shell relative flex items-end gap-2">
-              <!-- 角色选择器 -->
-              <div class="relative shrink-0 self-center pl-2">
-                <button
-                  class="char-pick-btn flex items-center gap-1.5 rounded-full px-2 py-1 text-xs transition-all"
-                  :class="selectedCharacter ? 'char-pick-active' : ''"
-                  @click="toggleCharacterPicker"
+            <!-- Gemini 风格：一个大卡片，图片在上、输入在中、操作栏在下 -->
+            <div class="input-shell flex flex-col">
+              <!-- 隐藏的图片文件选择 input -->
+              <input
+                ref="imageInputRef"
+                type="file"
+                accept="image/*"
+                multiple
+                class="hidden"
+                @change="handleImageSelect"
+              />
+
+              <!-- 已选图片预览区（Gemini 风格：卡片内顶部） -->
+              <div v-if="pendingImages.length > 0" class="img-preview-row">
+                <div
+                  v-for="(img, idx) in pendingImages"
+                  :key="idx"
+                  class="img-preview-item group"
                 >
-                  <img
-                    v-if="selectedCharacter?.avatar"
-                    :src="selectedCharacter.avatar"
-                    class="h-5 w-5 rounded-full object-cover"
-                  />
-                  <span v-else class="flex h-5 w-5 items-center justify-center rounded-full bg-sky-500/20 text-[10px] text-sky-400">
-                    AI
-                  </span>
-                  <span class="max-w-[60px] truncate">{{ selectedCharacter?.name || '默认' }}</span>
-                  <span class="char-mode-pill">{{ expertMode === 'multi' ? '多专家' : '标准' }}</span>
-                  <el-icon class="text-[10px] transition-transform" :class="showCharacterPicker ? 'rotate-180' : ''">
-                    <ArrowDown />
-                  </el-icon>
-                </button>
-
-                <Transition name="fade-up">
-                  <div v-if="showCharacterPicker" class="char-picker-popup absolute bottom-full left-0 z-50 mb-2 w-52 rounded-xl border p-2 shadow-xl">
-                    <div class="mb-1.5 px-2 text-[10px] font-medium uppercase tracking-wider opacity-50">回答模式</div>
-                    <div class="mb-2 grid grid-cols-2 gap-1 px-1">
-                      <button
-                        class="char-mode-option rounded-lg px-2 py-1.5 text-[11px] font-medium transition-colors"
-                        :class="expertMode === 'standard' ? 'char-mode-option-active' : ''"
-                        @click="selectExpertMode('standard')"
-                      >
-                        标准回答
-                      </button>
-                      <button
-                        class="char-mode-option rounded-lg px-2 py-1.5 text-[11px] font-medium transition-colors"
-                        :class="expertMode === 'multi' ? 'char-mode-option-active' : ''"
-                        @click="selectExpertMode('multi')"
-                      >
-                        多专家
-                      </button>
-                    </div>
-
-                    <div class="mb-1.5 px-2 text-[10px] font-medium uppercase tracking-wider opacity-50">选择角色</div>
-                    <div
-                      class="char-picker-item flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 transition-colors"
-                      :class="!selectedCharacter ? 'char-picker-active' : ''"
-                      @click="selectCharacter(null)"
-                    >
-                      <span class="flex h-6 w-6 items-center justify-center rounded-full bg-slate-500/20 text-[10px]">AI</span>
-                      <span class="text-xs">默认助手</span>
-                    </div>
-                    <div
-                      v-for="char in characters"
-                      :key="char.key"
-                      class="char-picker-item flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 transition-colors"
-                      :class="selectedCharacter?.key === char.key ? 'char-picker-active' : ''"
-                      @click="selectCharacter(char)"
-                    >
-                      <img v-if="char.avatar" :src="char.avatar" class="h-6 w-6 rounded-full object-cover" />
-                      <span v-else class="flex h-6 w-6 items-center justify-center rounded-full bg-sky-500/20 text-[10px] text-sky-400">
-                        {{ char.name?.charAt(0) || 'A' }}
-                      </span>
-                      <div class="min-w-0 flex-1">
-                        <div class="truncate text-xs font-medium">{{ char.name }}</div>
-                        <div class="truncate text-[10px] opacity-50">{{ char.personality || char.product }}</div>
-                      </div>
-                    </div>
-                  </div>
-                </Transition>
+                  <img :src="img" class="h-full w-full rounded-xl object-cover" @click="previewImage(img)" />
+                  <button
+                    type="button"
+                    class="img-preview-remove"
+                    @click="removePendingImage(idx)"
+                  >
+                    <el-icon :size="10"><Close /></el-icon>
+                  </button>
+                </div>
               </div>
+
+              <!-- 文本输入区 -->
               <ElInput
                 v-model="inputText"
                 type="textarea"
                 :rows="1"
-                :autosize="{ minRows: 1, maxRows: 4 }"
-                placeholder="输入你的问题..."
+                :autosize="{ minRows: 1, maxRows: 6 }"
+                :placeholder="pendingImages.length > 0 ? '描述图片内容或提问...' : '输入你的问题...'"
                 :disabled="isLoading"
-                class="custom-input flex-1 min-w-0"
+                class="custom-input input-shell-textarea"
                 @keydown="handleKeydown"
               />
-              <div class="absolute right-2 bottom-1.5">
-                <button
-                  class="send-button rounded-lg bg-sky-600 p-1.5 text-white shadow-lg shadow-sky-950/30 transition-colors hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-50"
-                  :disabled="!canSend"
-                  @click="handleSend"
-                >
-                  <el-icon v-if="!isLoading" class="text-lg block"><Position /></el-icon>
-                  <el-icon v-else class="animate-spin text-lg block"><Loading /></el-icon>
-                </button>
+
+              <!-- 底部操作栏 -->
+              <div class="input-toolbar">
+                <!-- 左侧：图片上传 + 角色选择器 -->
+                <div class="flex items-center gap-1.5">
+                  <!-- 图片上传按钮 -->
+                  <ElTooltip content="上传图片（多模态识图）" placement="top" :show-after="400">
+                    <button
+                      type="button"
+                      class="toolbar-btn"
+                      :class="pendingImages.length > 0 ? 'toolbar-btn--active' : ''"
+                      :disabled="isLoading"
+                      @click="triggerImageUpload"
+                    >
+                      <el-icon class="text-base"><Picture /></el-icon>
+                      <span v-if="pendingImages.length > 0" class="toolbar-btn-badge">{{ pendingImages.length }}</span>
+                    </button>
+                  </ElTooltip>
+
+                  <!-- 模型选择器 -->
+                  <div class="relative">
+                    <button
+                      type="button"
+                      class="char-pick-btn flex items-center gap-1.5 rounded-full px-2 py-1 text-xs transition-all"
+                      @click="toggleModelPicker"
+                    >
+                      <span class="text-sm leading-none">{{ selectedModel.icon }}</span>
+                      <span class="max-w-[72px] truncate font-medium">{{ selectedModel.label }}</span>
+                      <span class="char-mode-pill">{{ expertMode === 'multi' ? '多专家' : '标准' }}</span>
+                      <el-icon class="text-[10px] transition-transform" :class="showModelPicker ? 'rotate-180' : ''">
+                        <ArrowDown />
+                      </el-icon>
+                    </button>
+
+                    <Transition name="fade-up">
+                      <div v-if="showModelPicker" class="char-picker-popup absolute bottom-full left-0 z-50 mb-2 w-52 rounded-xl border p-2 shadow-xl">
+                        <div class="mb-1.5 px-2 text-[10px] font-medium uppercase tracking-wider opacity-50">回答模式</div>
+                        <div class="mb-2 grid grid-cols-2 gap-1 px-1">
+                          <button
+                            type="button"
+                            class="char-mode-option rounded-lg px-2 py-1.5 text-[11px] font-medium transition-colors"
+                            :class="expertMode === 'standard' ? 'char-mode-option-active' : ''"
+                            @click.stop="selectExpertMode('standard')"
+                          >
+                            标准回答
+                          </button>
+                          <button
+                            type="button"
+                            class="char-mode-option rounded-lg px-2 py-1.5 text-[11px] font-medium transition-colors"
+                            :class="expertMode === 'multi' ? 'char-mode-option-active' : ''"
+                            @click.stop="selectExpertMode('multi')"
+                          >
+                            多专家
+                          </button>
+                        </div>
+
+                        <div class="mb-1.5 px-2 text-[10px] font-medium uppercase tracking-wider opacity-50">选择模型</div>
+                        <div
+                          v-for="model in MODEL_OPTIONS"
+                          :key="model.key"
+                          class="char-picker-item flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 transition-colors"
+                          :class="selectedModel.key === model.key ? 'char-picker-active' : ''"
+                          @click="selectModel(model)"
+                        >
+                          <span class="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full bg-sky-500/10 text-sm">{{ model.icon }}</span>
+                          <div class="min-w-0 flex-1">
+                            <div class="truncate text-xs font-medium">{{ model.label }}</div>
+                            <div class="truncate text-[10px] opacity-50">{{ model.desc }}</div>
+                          </div>
+                          <el-icon v-if="selectedModel.key === model.key" class="flex-shrink-0 text-sky-400 text-xs"><Check /></el-icon>
+                        </div>
+                      </div>
+                    </Transition>
+                  </div>
+                </div>
+
+                <!-- 右侧：发送 / 中止按钮 -->
+                <div class="flex items-center">
+                  <button
+                    class="send-button"
+                    :class="{ 'send-button--stop': isLoading }"
+                    :disabled="!isLoading && !canSend"
+                    @click="isLoading ? stopGeneration() : handleSend()"
+                  >
+                    <el-icon v-if="!isLoading" class="text-base block"><Position /></el-icon>
+                    <span v-else class="stop-icon-sq"></span>
+                  </button>
+                </div>
               </div>
             </div>
-            <div class="mt-2 flex justify-between px-1 text-[10px] text-slate-500">
+
+            <div class="mt-1.5 flex justify-start px-1 text-[10px] text-slate-500">
               <span v-if="contextMessageCount > 0" class="flex items-center gap-1">
                 <el-icon class="text-sky-400"><ChatDotSquare /></el-icon>
               </span>
-              <span v-else></span>
-              <span v-if="isLoading" class="text-sky-400 animate-pulse">正在生成回答...</span>
             </div>
           </div>
         </div>
@@ -634,6 +677,9 @@ import {
   Position,
   RefreshRight,
   ChatDotSquare,
+  Plus,
+  Picture,
+  Close,
 } from '@element-plus/icons-vue';
 import MarkdownIt from 'markdown-it';
 import hljs from 'highlight.js';
@@ -660,7 +706,19 @@ import {
   type FollowUpQuestion,
 } from '../../kg_preview/utils/api';
 import FollowUpPanel from './FollowUpPanel.vue';
-import { getAvailableCharacters, type CharacterVO } from '../../../kb/character/utils/api';
+
+// 可用模型列表（前端静态定义，和后端 _MODEL_REGISTRY 一一对应）
+interface ModelOption {
+  key: string;
+  label: string;
+  desc: string;
+  icon: string;
+}
+
+const MODEL_OPTIONS: ModelOption[] = [
+  { key: 'siliconflow', label: 'Qwen3.5-122B', desc: '云端 · SiliconFlow', icon: '☁️' },
+  { key: 'ollama',      label: 'Qwen3:27B',    desc: '本地 · Ollama',      icon: '🖥️' },
+];
 
 const props = defineProps<{
   selectedDatabase?: string;
@@ -699,6 +757,12 @@ const md = new MarkdownIt({
 const messages = ref<KgChatMessage[]>([]);
 const inputText = ref('');
 const isLoading = ref(false);
+const streamAbortController = ref<AbortController | null>(null);
+
+function stopGeneration() {
+  streamAbortController.value?.abort();
+  streamAbortController.value = null;
+}
 const intakeDialogVisible = ref(false);
 const scrollRef = ref<InstanceType<typeof ElScrollbar>>();
 const isSidebarCollapsed = ref(false);
@@ -706,16 +770,22 @@ const selectedStrategy = ref<SearchStrategy>('auto');
 const serviceStatus = ref<'checking' | 'online' | 'offline'>('checking');
 const graphStatsInfo = ref<{ nodes: number; edges: number; communities?: number } | null>(null);
 const messageGraphMap = reactive<Record<string, { entities: EntityInfo[]; relations: RelationInfo[] }>>({});
+const activeGraphPreviewMessageId = ref<string | null>(null);
+// 用户是否手动向上滚动（若是则暂停自动滚动）
+const userScrolledUp = ref(false);
+
+// 图片上传（多模态）
+const pendingImages = ref<string[]>([]);
+const imageInputRef = ref<HTMLInputElement | null>(null);
 
 // 数据库选择
 const databases = ref<Neo4jDatabaseInfo[]>([]);
 const selectedDatabase = ref<string>(props.selectedDatabase || '');
 
-// 角色选择
-const characters = ref<CharacterVO[]>([]);
-const selectedCharacter = ref<CharacterVO | null>(null);
-const showCharacterPicker = ref(false);
-const expertMode = ref<'standard' | 'multi'>('multi');
+// 模型选择
+const selectedModel = ref<ModelOption>(MODEL_OPTIONS[0]!);
+const showModelPicker = ref(false);
+const expertMode = ref<'standard' | 'multi'>('standard');
 const expertStageTemplates: ExpertStageState[] = [
   { key: 'evidence', title: '证据专家', status: 'pending' },
   { key: 'pathology', title: '病理专家', status: 'pending' },
@@ -744,21 +814,13 @@ function updateExpertStage(message: KgChatMessage, stageEvent: ExpertStageState)
   message.expertStages = [...stages];
 }
 
-async function loadCharacters() {
-  try {
-    characters.value = await getAvailableCharacters();
-  } catch (e) {
-    console.warn('Failed to load characters:', e);
-  }
+function selectModel(model: ModelOption) {
+  selectedModel.value = model;
+  showModelPicker.value = false;
 }
 
-function selectCharacter(char: CharacterVO | null) {
-  selectedCharacter.value = char;
-  showCharacterPicker.value = false;
-}
-
-function toggleCharacterPicker() {
-  showCharacterPicker.value = !showCharacterPicker.value;
+function toggleModelPicker() {
+  showModelPicker.value = !showModelPicker.value;
 }
 
 function selectExpertMode(mode: 'standard' | 'multi') {
@@ -999,11 +1061,19 @@ function clearMessageGraphMap() {
   Object.keys(messageGraphMap).forEach((key) => {
     delete messageGraphMap[key];
   });
+  activeGraphPreviewMessageId.value = null;
+}
+
+function removeMessageGraphData(messageId: string) {
+  delete messageGraphMap[messageId];
+  if (activeGraphPreviewMessageId.value === messageId) {
+    activeGraphPreviewMessageId.value = null;
+  }
 }
 
 function setMessageGraphData(messageId: string, entities: EntityInfo[], relations: RelationInfo[]) {
   if (!messageId || (!entities.length && !relations.length)) {
-    delete messageGraphMap[messageId];
+    removeMessageGraphData(messageId);
     return;
   }
 
@@ -1018,6 +1088,38 @@ function hasMessageGraph(messageId: string) {
   return !!graphData && (graphData.entities.length > 0 || graphData.relations.length > 0);
 }
 
+function isMessageGraphPreviewVisible(messageId: string) {
+  return activeGraphPreviewMessageId.value === messageId && hasMessageGraph(messageId);
+}
+
+function emitGraphHighlight(messageId: string) {
+  const graphData = messageGraphMap[messageId];
+  if (!graphData) return;
+
+  const graphNodes = graphData.entities.map((entity: EntityInfo) => ({
+    id: entity.name,
+    label: entity.name,
+    ...entity,
+    value: 1,
+  }));
+  const graphEdges = graphData.relations.map((relation: RelationInfo, idx: number) => ({
+    ...relation,
+    id: `rel_${idx}`,
+    source: relation.source,
+    target: relation.target,
+    relationType: relation.type,
+    description: relation.description,
+  }));
+
+  emit('kg-highlight', {
+    seedNodeIds: graphNodes.map((n: any) => n.id),
+    nodeIds: graphNodes.map((n: any) => n.id),
+    linkIds: graphEdges.map((e: any) => e.id),
+    maxDepth: 1,
+    graph: { nodes: graphNodes, edges: graphEdges, links: graphEdges },
+  });
+}
+
 function getMessageGraphNodeCount(messageId: string) {
   return messageGraphMap[messageId]?.entities.length ?? 0;
 }
@@ -1027,7 +1129,7 @@ function getMessageGraphLinkCount(messageId: string) {
 }
 
 // 计算属性
-const canSend = computed(() => inputText.value.trim() && !isLoading.value);
+const canSend = computed(() => (inputText.value.trim() || pendingImages.value.length > 0) && !isLoading.value);
 // 计算有效上下文消息数量（排除欢迎消息、加载中消息和错误消息）
 const contextMessageCount = computed(() => {
   return messages.value.filter(msg => 
@@ -1046,9 +1148,19 @@ function generateId(): string {
   return `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 }
 
+// 监听用户手动滚动
+function onScrollAreaScroll() {
+  const scrollEl = scrollRef.value?.wrapRef;
+  if (!scrollEl) return;
+  const distanceFromBottom = scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight;
+  // 距离底部超过 80px 视为用户主动向上滚动
+  userScrolledUp.value = distanceFromBottom > 80;
+}
+
 // 滚动到底部
-async function scrollToBottom() {
+async function scrollToBottom(force = false) {
   await nextTick();
+  if (userScrolledUp.value && !force) return;
   if (scrollRef.value) {
     const scrollEl = scrollRef.value.wrapRef;
     if (scrollEl) {
@@ -1124,6 +1236,8 @@ interface SendQuestionOptions {
   sourceLabel?: string;
   patientIntake?: PatientIntakeStreamPayload;
   historyEndIndex?: number;
+  overrideExpertMode?: 'standard' | 'multi';
+  images?: string[];
 }
 
 // 发送消息
@@ -1132,9 +1246,11 @@ async function sendQuestion(
   options: SendQuestionOptions = {},
 ) {
   const trimmedQuestion = question.trim();
-  if (!trimmedQuestion || isLoading.value) return;
+  const hasImages = options.images && options.images.length > 0;
+  if ((!trimmedQuestion && !hasImages) || isLoading.value) return;
+  const resolvedExpertMode = options.overrideExpertMode ?? expertMode.value;
 
-  const displayContent = (options.displayContent || trimmedQuestion).trim();
+  const displayContent = (options.displayContent || trimmedQuestion || '请看图片').trim();
 
   // 发送前抓取历史上下文（不包含本轮问题）
   const apiChatHistory = buildApiChatHistory(
@@ -1160,6 +1276,7 @@ async function sendQuestion(
     timestamp: new Date(),
     sourceLabel: options.sourceLabel,
     patientIntake: options.patientIntake,
+    images: options.images,
     sources: options.patientIntake
       ? { patient_intake: options.patientIntake }
       : undefined,
@@ -1174,7 +1291,7 @@ async function sendQuestion(
     loading: true,
     loadingText: '正在分析问题...',
     strategy: normalizeVisibleStrategy(selectedStrategy.value),
-    expertStages: createExpertStages(),
+    expertStages: resolvedExpertMode === 'multi' ? createExpertStages() : [],
     sourceLabel: options.sourceLabel,
     patientIntake: options.patientIntake,
     sources: options.patientIntake
@@ -1185,7 +1302,9 @@ async function sendQuestion(
 
   inputText.value = '';
   isLoading.value = true;
-  await scrollToBottom();
+  streamAbortController.value = new AbortController();
+  userScrolledUp.value = false; // 发送新消息时重置，始终滚到底部
+  await scrollToBottom(true);
 
   const loadingStages = [
     '正在分析问题意图...',
@@ -1211,34 +1330,6 @@ async function sendQuestion(
     if (!activeDatabase) {
       throw new Error('请先选择知识库（database）');
     }
-
-    // 用于在 onMetadata 回调中发出图谱高亮
-    const emitGraphHighlight = (
-      entities: EntityInfo[],
-      relations: RelationInfo[],
-    ) => {
-      const graphNodes = entities.map((entity: EntityInfo) => ({
-        id: entity.name,
-        label: entity.name,
-        ...entity,
-        value: 1,
-      }));
-      const graphEdges = relations.map((relation: RelationInfo, idx: number) => ({
-        ...relation,
-        id: `rel_${idx}`,
-        source: relation.source,
-        target: relation.target,
-        relationType: relation.type,
-        description: relation.description,
-      }));
-      emit('kg-highlight', {
-        seedNodeIds: graphNodes.map((n: any) => n.id),
-        nodeIds: graphNodes.map((n: any) => n.id),
-        linkIds: graphEdges.map((e: any) => e.id),
-        maxDepth: 1,
-        graph: { nodes: graphNodes, edges: graphEdges, links: graphEdges },
-      });
-    };
 
     const lastMessage = messages.value[messages.value.length - 1];
 
@@ -1277,11 +1368,10 @@ async function sendQuestion(
               relations: lastMessage.relations,
               question: trimmedQuestion,
             });
-            emitGraphHighlight(apiEntities, explainRelations);
           } else {
-            lastMessage.chunks = meta.chunks || [];
+            // 无实体/关系时不写入 chunks，避免引用区域意外出现
             lastMessage.communities_used = meta.communities_used;
-            delete messageGraphMap[lastMessage.id];
+            removeMessageGraphData(lastMessage.id);
           }
         },
         onExpertStage(stageEvent) {
@@ -1321,19 +1411,28 @@ async function sendQuestion(
               lastMessage.expertStages = [];
             }
             lastMessage.error = err;
-            lastMessage.content = `抱歉，搜索过程中出现错误：${err}。请检查后端服务是否正常运行。`;
-            delete messageGraphMap[lastMessage.id];
+            // 区分错误类型给出可操作提示
+            if (err.includes('时间过长') || err.includes('timeout') || err.includes('Timeout')) {
+              lastMessage.content = '查询处理时间过长，请尝试简化问题或缩小搜索范围后重试。';
+            } else if (err.includes('network') || err.includes('Failed to fetch') || err.includes('abort')) {
+              lastMessage.content = '网络连接中断，请检查网络连接后重试。';
+            } else {
+              lastMessage.content = `抱歉，搜索过程中出现错误：${err}。请检查后端服务是否正常运行。`;
+            }
+            removeMessageGraphData(lastMessage.id);
           }
         },
       },
       currentSessionId.value,
       undefined,
       activeDatabase,
-      undefined,
-      selectedCharacter.value?.key,
-      expertMode.value,
+      streamAbortController.value?.signal,
+      undefined,                // characterKey 已弃用
+      resolvedExpertMode,
       displayContent,
       options.patientIntake,
+      options.images,
+      selectedModel.value.key,  // modelKey
     );
   } catch (error: any) {
     console.error('GraphRAG search failed:', error);
@@ -1341,20 +1440,81 @@ async function sendQuestion(
     const lastMessage = messages.value[messages.value.length - 1];
     if (lastMessage && lastMessage.role === 'assistant') {
       lastMessage.loading = false;
-      lastMessage.expertStages = [];
-      lastMessage.error = error.message || '请求失败';
-      lastMessage.content = `抱歉，搜索过程中出现错误：${error.message || '未知错误'}。请检查后端服务是否正常运行。`;
-      delete messageGraphMap[lastMessage.id];
+      lastMessage.expertStages = lastMessage.expertStages ?? [];
+      // 用户主动中止 — 保留已生成内容，不显示错误
+      if (error.name === 'AbortError') {
+        if (!lastMessage.content) lastMessage.content = '已停止生成';
+      } else {
+        lastMessage.error = error.message || '请求失败';
+        const msg = error.message || '';
+        if (msg.includes('时间过长') || msg.includes('timeout') || msg.includes('Timeout')) {
+          lastMessage.content = '查询处理时间过长，请尝试简化问题或缩小搜索范围后重试。';
+        } else if (msg.includes('network') || msg.includes('Failed to fetch')) {
+          lastMessage.content = '网络连接中断，请检查网络连接后重试。';
+        } else {
+          lastMessage.content = `抱歉，搜索过程中出现错误：${msg || '未知错误'}。请检查后端服务是否正常运行。`;
+        }
+        removeMessageGraphData(lastMessage.id);
+      }
     }
   } finally {
     clearInterval(loadingInterval);
     isLoading.value = false;
+    streamAbortController.value = null;
     await scrollToBottom();
   }
 }
 
+// ---- 图片上传相关 ----
+function triggerImageUpload() {
+  imageInputRef.value?.click();
+}
+
+function handleImageSelect(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const files = input.files;
+  if (!files) return;
+
+  const MAX_IMAGES = 4;
+  const MAX_SIZE = 10 * 1024 * 1024; // 10MB
+
+  for (const file of Array.from(files)) {
+    if (pendingImages.value.length >= MAX_IMAGES) {
+      ElMessage.warning(`最多上传 ${MAX_IMAGES} 张图片`);
+      break;
+    }
+    if (!file.type.startsWith('image/')) {
+      ElMessage.warning(`${file.name} 不是图片文件`);
+      continue;
+    }
+    if (file.size > MAX_SIZE) {
+      ElMessage.warning(`${file.name} 超过 10MB 限制`);
+      continue;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === 'string') {
+        pendingImages.value.push(reader.result);
+      }
+    };
+    reader.readAsDataURL(file);
+  }
+  // 清空 input 以允许重复选择相同文件
+  input.value = '';
+}
+
+function removePendingImage(index: number) {
+  pendingImages.value.splice(index, 1);
+}
+
+function previewImage(src: string) {
+  window.open(src, '_blank');
+}
+
 async function handleSend() {
-  await sendQuestion(inputText.value.trim());
+  const images = pendingImages.value.length > 0 ? [...pendingImages.value] : undefined;
+  pendingImages.value = [];
+  await sendQuestion(inputText.value.trim(), { images });
 }
 
 function openPatientIntake() {
@@ -1380,7 +1540,11 @@ async function handlePatientIntakeSubmit(payload: PatientIntakeSubmitPayload) {
   });
 }
 // 点击实体
-function handleEntityClick(entity: EntityInfo) {
+function handleEntityClick(messageId: string, entity: EntityInfo) {
+  if (hasMessageGraph(messageId)) {
+    activeGraphPreviewMessageId.value = messageId;
+    emitGraphHighlight(messageId);
+  }
   emit('selectEntity', entity);
 }
 
@@ -1400,14 +1564,19 @@ function handleFollowUpSubmit(message: KgChatMessage, answers: Record<string, st
 
   message.followUpQuestions = []; // 隐藏面板
   sendQuestion(supplementQuestion, {
-    displayContent: `补充信息：${lines.map((l) => l.split('：')[0]).join('、')}`,
+    displayContent: `补充信息：${answersText}`,
     sourceLabel: message.sourceLabel,
     patientIntake: message.patientIntake,
+    overrideExpertMode: 'standard',
   });
 }
 
 // 高亮所有实体
-function handleHighlightEntities(entities: EntityInfo[]) {
+function handleHighlightEntities(messageId: string, entities: EntityInfo[]) {
+  if (hasMessageGraph(messageId)) {
+    activeGraphPreviewMessageId.value = messageId;
+    emitGraphHighlight(messageId);
+  }
   emit('highlightEntities', entities);
 }
 
@@ -1529,26 +1698,30 @@ onMounted(async () => {
   await loadSessions();
   await checkServiceStatus();
   await loadDatabases();
-  await loadCharacters();
   addWelcomeMessage();
+
+  // 监听滚动单元，检测用户是否主动向上滚动
+  await nextTick();
+  scrollRef.value?.wrapRef?.addEventListener('scroll', onScrollAreaScroll, { passive: true });
 
   // 点击外部关闭角色选择弹窗
   document.addEventListener('click', handleDocClick);
 });
 
 function handleDocClick(e: MouseEvent) {
-  if (showCharacterPicker.value) {
+  if (showModelPicker.value) {
     const target = e.target as HTMLElement;
     if (
       !target.closest('.char-pick-btn') &&
       !target.closest('.char-picker-popup')
     ) {
-      showCharacterPicker.value = false;
+      showModelPicker.value = false;
     }
   }
 }
 
 onUnmounted(() => {
+  scrollRef.value?.wrapRef?.removeEventListener('scroll', onScrollAreaScroll);
   document.removeEventListener('click', handleDocClick);
 });
 </script>
@@ -2198,16 +2371,164 @@ onUnmounted(() => {
 
 .input-shell {
   border: 1px solid var(--kc-shell-border);
-  border-radius: 28px;
+  border-radius: 20px;
   background: var(--kc-shell-bg);
   box-shadow: var(--kc-shell-shadow);
+  padding: 10px 14px 8px;
+  transition: box-shadow 0.2s ease;
+  &:focus-within {
+    box-shadow: 0 20px 48px rgba(0, 0, 0, 0.12), 0 0 0 1.5px rgba(56, 189, 248, 0.25);
+  }
+}
+
+/* 图片预览行（卡片内顶部） */
+.img-preview-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--kc-shell-border);
+  margin-bottom: 6px;
+}
+
+.img-preview-item {
+  position: relative;
+  width: 72px;
+  height: 72px;
+  border-radius: 12px;
+  overflow: visible;
+  cursor: pointer;
+  flex-shrink: 0;
+  & img {
+    border: 1px solid rgba(0,0,0,0.08);
+    transition: opacity 0.15s;
+    &:hover { opacity: 0.88; }
+  }
+}
+
+.img-preview-remove {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: rgba(15, 23, 42, 0.75);
+  backdrop-filter: blur(4px);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.15s;
+  z-index: 1;
+  .img-preview-item:hover & {
+    opacity: 1;
+  }
+}
+
+/* 底部操作栏 */
+.input-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-top: 6px;
+  margin-top: 2px;
+}
+
+/* 工具栏图标按钮 */
+.toolbar-btn {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: none;
+  color: var(--kc-muted, #94a3b8);
+  background: transparent;
+  cursor: pointer;
+  transition: all 0.18s ease;
+  &:hover:not(:disabled) {
+    color: var(--kc-accent, #38bdf8);
+    background: rgba(56, 189, 248, 0.1);
+  }
+  &:disabled {
+    cursor: not-allowed;
+    opacity: 0.3;
+  }
+}
+.toolbar-btn--active {
+  color: #0ea5e9 !important;
+  background: rgba(14, 165, 233, 0.12) !important;
+}
+.toolbar-btn-badge {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: 7px;
+  background: #0ea5e9;
+  color: #fff;
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 14px;
+  text-align: center;
+}
+
+/* 输入框浮层内边距去除 */
+.input-shell-textarea :deep(.el-textarea__inner) {
+  padding: 4px 0 !important;
+  box-shadow: none !important;
+  border: none !important;
+  border-radius: 0 !important;
+  background: transparent !important;
 }
 
 .send-button {
-  height: 32px;
-  width: 32px;
-  border-radius: 999px;
-  background-image: linear-gradient(135deg, rgba(76, 125, 255, 0.96), rgba(59, 130, 246, 0.92));
+  height: 34px;
+  width: 34px;
+  border-radius: 50%;
+  background-image: linear-gradient(135deg, #4c7dff, #3b82f6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  border: none;
+  cursor: pointer;
+  transition: all 0.18s ease;
+  box-shadow: 0 2px 8px rgba(59, 130, 246, 0.35);
+  &:hover:not(:disabled) {
+    background-image: linear-gradient(135deg, #5b8aff, #4f90f7);
+    box-shadow: 0 4px 14px rgba(59, 130, 246, 0.45);
+  }
+  &:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+    box-shadow: none;
+  }
+}
+
+/* 中止状态：色调改为深色 + hover变红 */
+.send-button--stop {
+  background-image: none !important;
+  background-color: rgba(15, 23, 42, 0.55) !important;
+  box-shadow: none !important;
+  &:hover {
+    background-color: rgba(239, 68, 68, 0.75) !important;
+  }
+}
+
+/* 停止图标：小白色方块 */
+.stop-icon-sq {
+  display: block;
+  width: 11px;
+  height: 11px;
+  border-radius: 2px;
+  background: #fff;
 }
 
 /* ─── Character picker ───────────────────────────────────────────────────── */
@@ -2347,6 +2668,15 @@ onUnmounted(() => {
 
 .retry-btn:hover {
   background-color: var(--kc-retry-hover) !important;
+}
+
+/* ─── 引用区入场动画 ─────────────────────────────────────────────────────── */
+.ref-section-enter-active {
+  transition: opacity 0.35s ease, transform 0.35s ease;
+}
+.ref-section-enter-from {
+  opacity: 0;
+  transform: translateY(10px);
 }
 
 /* ─── Collapse panels ─────────────────────────────────────────────────────── */
@@ -2525,15 +2855,17 @@ onUnmounted(() => {
 
 /* ─── Inputs ──────────────────────────────────────────────────────────────── */
 .custom-input :deep(.el-textarea__inner) {
-  min-height: 44px !important;
+  min-height: 28px !important;
   background-color: transparent;
   border: none;
-  border-radius: 20px;
-  padding: 12px 52px 10px 14px;
+  border-radius: 0;
+  padding: 2px 0;
   color: var(--kc-input-color);
-  box-shadow: none;
+  box-shadow: none !important;
   resize: none;
-  transition: all 0.2s;
+  transition: color 0.2s;
+  font-size: 14px;
+  line-height: 1.6;
 }
 
 .custom-input :deep(.el-textarea__inner::-webkit-resizer) {

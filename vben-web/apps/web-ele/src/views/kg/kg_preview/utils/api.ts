@@ -104,6 +104,7 @@ export interface KgChatMessage {
   sources?: Record<string, any>;
   sourceLabel?: string;
   patientIntake?: PatientIntakeStreamPayload;
+  images?: string[];  // base64 data-URL 图片（多模态）
   isWelcome?: boolean;
 }
 
@@ -254,13 +255,15 @@ export interface StreamFollowUpQuestionsEvent {
 }
 export interface StreamDoneEvent { type: 'done' }
 export interface StreamErrorEvent { type: 'error'; error: string }
+export interface StreamHeartbeatEvent { type: 'heartbeat' }
 export type StreamEvent =
   | StreamMetadataEvent
   | StreamExpertStageEvent
   | StreamTokenEvent
   | StreamFollowUpQuestionsEvent
   | StreamDoneEvent
-  | StreamErrorEvent;
+  | StreamErrorEvent
+  | StreamHeartbeatEvent;
 
 /**
  * GraphRAG 流式混合搜索 - 使用 SSE 实时返回 LLM 生成内容
@@ -292,6 +295,8 @@ export async function hybridSearchStream(
   expertMode: 'standard' | 'multi' = 'standard',
   displayQuestion?: string,
   patientIntake?: PatientIntakeStreamPayload,
+  images?: string[],
+  modelKey?: string,
 ): Promise<void> {
   const apiBase = (import.meta.env.VITE_GLOB_API_URL as string) || '/api';
   const url = `${apiBase}/kg/graphrag/hybrid_search/stream`;
@@ -309,6 +314,8 @@ export async function hybridSearchStream(
   if (expertMode) body.expert_mode = expertMode;
   if (displayQuestion) body.display_question = displayQuestion;
   if (patientIntake) body.patient_intake = patientIntake;
+  if (images && images.length > 0) body.images = images;
+  if (modelKey) body.model_key = modelKey;
 
   const response = await fetch(url, {
     method: 'POST',
@@ -326,9 +333,24 @@ export async function hybridSearchStream(
   const decoder = new TextDecoder();
   let buffer = '';
 
+  // 流式读取超时保护：90s 无数据则主动断开
+  const STREAM_READ_TIMEOUT = 90_000;
+  let readTimer: ReturnType<typeof setTimeout> | null = null;
+  const abortCtrl = new AbortController();
+  const resetReadTimer = () => {
+    if (readTimer) clearTimeout(readTimer);
+    readTimer = setTimeout(() => {
+      reader.cancel();
+      callbacks.onError?.('查询处理时间过长，请尝试简化问题或缩小搜索范围');
+    }, STREAM_READ_TIMEOUT);
+  };
+  resetReadTimer();
+
+  try {
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
+    resetReadTimer();
     buffer += decoder.decode(value, { stream: true });
 
     // SSE 各事件以 \n\n 分隔
@@ -344,6 +366,10 @@ export async function hybridSearchStream(
       try {
         event = JSON.parse(jsonStr) as StreamEvent;
       } catch {
+        continue;
+      }
+      // 心跳事件：仅重置读超时计时器，不触发 UI
+      if (event.type === 'heartbeat') {
         continue;
       }
       if (event.type === 'metadata') {
@@ -364,6 +390,9 @@ export async function hybridSearchStream(
     }
   }
   callbacks.onDone?.();
+  } finally {
+    if (readTimer) clearTimeout(readTimer);
+  }
 }
 
 export async function parsePatientIntakeAttachment(

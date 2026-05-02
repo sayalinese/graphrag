@@ -118,6 +118,42 @@ export async function toggleCharacterStatus(id: number): Promise<{ success: bool
   return requestClient.post(`/character/${id}/toggle-status`);
 }
 
+// ─────────────────────────────────────────────
+// 多专家配置 API
+// ─────────────────────────────────────────────
+
+export interface ExpertConfigVO {
+  id?: number;
+  key: string;
+  title: string;
+  description: string;
+  running_detail: string;
+  enabled: boolean;
+  order: number;
+  updated_at?: string;
+}
+
+export interface UpdateExpertConfigRequest {
+  title?: string;
+  description?: string;
+  running_detail?: string;
+  enabled?: boolean;
+  order?: number;
+}
+
+export async function listExpertConfigs(): Promise<ExpertConfigVO[]> {
+  const res = await requestClient.get('/expert/configs');
+  return res?.configs || res?.data?.configs || [];
+}
+
+export async function updateExpertConfig(
+  key: string,
+  data: UpdateExpertConfigRequest
+): Promise<ExpertConfigVO> {
+  const res = await requestClient.put(`/expert/config/${key}`, data);
+  return res?.config || res?.data?.config;
+}
+
 export function useCharacterApi() {
   const loading = ref(false);
   const characters = ref<CharacterVO[]>([]);

@@ -2638,7 +2638,9 @@ def graphrag_hybrid_search_stream():
         session_id = data.get('session_id')
         doc_id = data.get('doc_id')
         character_key = data.get('character_key')
+        model_key = data.get('model_key')  # 模型选择：siliconflow | ollama
         patient_intake = _sanitize_patient_intake_payload(data.get('patient_intake'))
+        images = data.get('images')  # base64 data-URL 列表，用于多模态识图
 
         # 查找角色 system_prompt
         character_system_prompt = None
@@ -2650,6 +2652,15 @@ def graphrag_hybrid_search_stream():
                     character_system_prompt = char.system_prompt
             except Exception as e:
                 logger.warning(f"Failed to load character '{character_key}': {e}")
+
+        # 按 model_key 构建 LLM 覆盖实例（None 表示使用默认 self.llm）
+        llm_override = None
+        if model_key:
+            try:
+                from app.utils.llm_utils import build_llm_by_key
+                llm_override = build_llm_by_key(model_key)
+            except Exception as e:
+                logger.warning(f"Failed to build llm for model_key='{model_key}': {e}")
         try:
             database = _require_graph_database(data.get('database'))
         except ValueError as exc:
@@ -2657,7 +2668,7 @@ def graphrag_hybrid_search_stream():
                 yield f"data: {_json.dumps({'type': 'error', 'error': str(exc)}, ensure_ascii=False)}\n\n"
             return Response(stream_with_context(_err()), mimetype='text/event-stream')
 
-        if not question:
+        if not question and not images:
             def _err():
                 yield f"data: {_json.dumps({'type': 'error', 'error': 'question is required'}, ensure_ascii=False)}\n\n"
             return Response(stream_with_context(_err()), mimetype='text/event-stream')
@@ -2706,6 +2717,8 @@ def graphrag_hybrid_search_stream():
                         database=database,
                         system_prompt=character_system_prompt,
                         expert_mode=expert_mode,
+                        images=images,
+                        llm_override=llm_override,
                     ):
                         # 收集 token 以便事后入库
                         try:

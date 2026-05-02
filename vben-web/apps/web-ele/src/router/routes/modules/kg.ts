@@ -44,16 +44,6 @@ const routes: RouteRecordRaw[] = [
         },
       },
       {
-        name: 'KgConstruct',
-        path: 'construct',
-        component: () => import('#/views/kg/kg_construct/index.vue'),
-        meta: {
-          title: $t('page.kg.construct'),
-          icon: 'mdi:database-plus-outline',
-          keepAlive: true,
-        },
-      },
-      {
         name: 'KgManagement',
         path: 'management',
         component: () => import('#/views/kg/kg_management/index.vue'),

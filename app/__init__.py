@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 # Load .env from project root into environment so Config can read values
 # This avoids hardcoding secrets in source while making .env values available at runtime
 root_env = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '.env'))
-load_dotenv(root_env)
+load_dotenv(root_env, override=True)  # override=True 确保 .env 始终覆盖系统环境变量
 from .config import Config
 from .extensions import db, migrate, init_cors, init_neo4j, close_neo4j
 from .services.async_tasks import init_task_queue, shutdown_task_queue

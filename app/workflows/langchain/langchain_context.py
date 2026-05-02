@@ -248,10 +248,8 @@ def create_llm_instance(model_type: str = "deepseek", user_id: int | None = None
 
         config.update(kwargs)
 
-        if model_key == 'deepseek' and ChatDeepSeek:
-            return ChatDeepSeek(**config)
-
-        # DeepSeek SDK 未安装时退化为 OpenAI 兼容调用，只要 base_url / api_key 配置正确即可
+        # 统一使用 ChatOpenAI 兼容接口调用（SiliconFlow / Qwen 等均兼容 OpenAI 协议）
+        # 注意：ChatDeepSeek 仅适用于 DeepSeek 官方 API，现已切换到 SiliconFlow，不可使用
         return ChatOpenAI(**config)
     except Exception as e:
         logger.error(f"Failed to create LLM instance: {str(e)}")

@@ -1,0 +1,279 @@
+/* 图睿病理 C 端设计系统 v2 - 温暖精致版 */
+
+:root {
+  /* ===== 字号系统（专业排版）===== */
+  --skin-text-xs: 12px;     /* 标签、辅助 */
+  --skin-text-sm: 13px;     /* 次要正文 */
+  --skin-text-base: 15px;   /* 默认正文 */
+  --skin-text-md: 16px;     /* 卡片标题 */
+  --skin-text-lg: 18px;     /* 副标题 */
+  --skin-text-xl: 22px;     /* 主标题 */
+  --skin-text-2xl: 28px;    /* 一句话结论 */
+  --skin-text-3xl: 36px;    /* 数字焦点 */
+  
+  /* ===== 字重 ===== */
+  --skin-font-normal: 400;
+  --skin-font-medium: 500;
+  --skin-font-semibold: 600;
+  --skin-font-bold: 700;
+  
+  /* ===== 行高 ===== */
+  --skin-leading-tight: 1.3;
+  --skin-leading-base: 1.6;
+  --skin-leading-relaxed: 1.8;
+  
+  /* ===== 字符间距（中文优化）===== */
+  --skin-tracking-tight: -0.01em;
+  --skin-tracking-normal: 0;
+  --skin-tracking-wide: 0.025em;
+  
+  /* ===== 颜色系统（温暖精致）===== */
+  /* 中性色（基于 slate，更冷静）*/
+  --skin-bg: #FAFAF9;            /* 主背景：温暖近白 */
+  --skin-surface: #FFFFFF;       /* 卡片背景：纯白 */
+  --skin-surface-soft: #F5F5F4;  /* 次级表面 */
+  --skin-border: #E7E5E4;        /* 边框：温暖浅灰 */
+  --skin-border-soft: #F5F5F4;   /* 弱化边框 */
+  
+  /* 文字层级 */
+  --skin-text-primary: #1C1917;  /* 主文字：温暖近黑 */
+  --skin-text-secondary: #57534E;/* 次要：石板灰 */
+  --skin-text-tertiary: #78716C; /* 第三层：中灰 */
+  --skin-text-muted: #A8A29E;    /* 弱化：浅灰 */
+  
+  /* 品牌色（温暖青）*/
+  --skin-brand: #2C7A7B;
+  --skin-brand-hover: #285E5F;
+  --skin-brand-light: #4FB5B6;
+  --skin-brand-soft: #F0FDFA;    /* 极浅品牌色背景 */
+  --skin-brand-50: #F0FDFA;
+  --skin-brand-100: #CCFBF1;
+  
+  /* 风险色（克制版）*/
+  --skin-risk-low: #059669;       /* emerald-600 */
+  --skin-risk-low-soft: #ECFDF5;
+  --skin-risk-low-text: #065F46;
+  
+  --skin-risk-mid: #D97706;       /* amber-600 */
+  --skin-risk-mid-soft: #FFFBEB;
+  --skin-risk-mid-text: #92400E;
+  
+  --skin-risk-high: #DC2626;      /* red-600 */
+  --skin-risk-high-soft: #FEF2F2;
+  --skin-risk-high-text: #991B1B;
+  
+  /* ===== 间距（基于 4px 网格）===== */
+  --skin-gap-1: 4px;
+  --skin-gap-2: 8px;
+  --skin-gap-3: 12px;
+  --skin-gap-4: 16px;
+  --skin-gap-5: 20px;
+  --skin-gap-6: 24px;
+  --skin-gap-8: 32px;
+  --skin-gap-10: 40px;
+  --skin-gap-12: 48px;
+  
+  /* ===== 圆角（克制）===== */
+  --skin-radius-sm: 6px;
+  --skin-radius-md: 8px;
+  --skin-radius-lg: 12px;
+  --skin-radius-xl: 16px;
+  
+  /* ===== 阴影（极轻）===== */
+  --skin-shadow-xs: 0 1px 2px rgba(0,0,0,0.03);
+  --skin-shadow-sm: 0 1px 3px rgba(0,0,0,0.04), 0 1px 2px rgba(0,0,0,0.03);
+  --skin-shadow-md: 0 4px 12px rgba(0,0,0,0.06);
+  
+  /* ===== 触控目标 ===== */
+  --skin-touch-min: 48px;
+  
+  /* ===== 过渡 ===== */
+  --skin-transition-fast: all 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+  --skin-transition-base: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  --skin-transition-slow: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* ===== 全局基础 ===== */
+.skin-page {
+  min-height: 100vh;
+  background: var(--skin-bg);
+  color: var(--skin-text-primary);
+  font-family: -apple-system, BlinkMacSystemFont, 
+               "PingFang SC", "HarmonyOS Sans SC", 
+               "Microsoft YaHei", system-ui, sans-serif;
+  font-size: var(--skin-text-base);
+  line-height: var(--skin-leading-base);
+  letter-spacing: var(--skin-tracking-normal);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-feature-settings: "tnum" on, "kern" on;
+}
+
+/* 数字字体（等宽，专业感）*/
+.skin-page .skin-numeric {
+  font-family: -apple-system, "SF Pro Display", 
+               "JetBrains Mono", "Roboto Mono", 
+               monospace;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+}
+
+/* 主容器 */
+.skin-container {
+  max-width: 480px;
+  margin: 0 auto;
+  padding: var(--skin-gap-6) var(--skin-gap-5);
+}
+
+/* ===== 按钮系统 ===== */
+.skin-btn-primary {
+  width: 100%;
+  min-height: 52px;
+  background: var(--skin-text-primary);  /* 改为深色，更专业 */
+  color: white;
+  border: none;
+  border-radius: var(--skin-radius-md);
+  font-size: var(--skin-text-md);
+  font-weight: var(--skin-font-medium);
+  cursor: pointer;
+  transition: var(--skin-transition-base);
+  font-family: inherit;
+  letter-spacing: var(--skin-tracking-tight);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.skin-btn-primary:hover:not(:disabled) {
+  background: #0C0A09;
+  transform: translateY(-1px);
+  box-shadow: var(--skin-shadow-md);
+}
+
+.skin-btn-primary:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.skin-btn-primary:disabled {
+  background: var(--skin-text-muted);
+  cursor: not-allowed;
+}
+
+/* 品牌色按钮（强调操作）*/
+.skin-btn-brand {
+  width: 100%;
+  min-height: 52px;
+  background: var(--skin-brand);
+  color: white;
+  border: none;
+  border-radius: var(--skin-radius-md);
+  font-size: var(--skin-text-md);
+  font-weight: var(--skin-font-medium);
+  cursor: pointer;
+  transition: var(--skin-transition-base);
+  font-family: inherit;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.skin-btn-brand:hover:not(:disabled) {
+  background: var(--skin-brand-hover);
+}
+
+/* 次按钮（描边）*/
+.skin-btn-secondary {
+  width: 100%;
+  min-height: 52px;
+  background: var(--skin-surface);
+  color: var(--skin-text-primary);
+  border: 1px solid var(--skin-border);
+  border-radius: var(--skin-radius-md);
+  font-size: var(--skin-text-md);
+  font-weight: var(--skin-font-medium);
+  cursor: pointer;
+  transition: var(--skin-transition-base);
+  font-family: inherit;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.skin-btn-secondary:hover:not(:disabled) {
+  background: var(--skin-surface-soft);
+  border-color: var(--skin-text-tertiary);
+}
+
+/* ===== 卡片系统 ===== */
+.skin-card {
+  background: var(--skin-surface);
+  border: 1px solid var(--skin-border);
+  border-radius: var(--skin-radius-lg);
+  padding: var(--skin-gap-6);
+}
+
+.skin-card-flat {
+  background: var(--skin-surface);
+  border: 1px solid var(--skin-border-soft);
+  border-radius: var(--skin-radius-md);
+}
+
+/* ===== 区块标题 ===== */
+.skin-section-label {
+  font-size: var(--skin-text-xs);
+  font-weight: var(--skin-font-semibold);
+  color: var(--skin-text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: var(--skin-tracking-wide);
+  margin: 0 0 var(--skin-gap-3) 0;
+}
+
+.skin-section-title {
+  font-size: var(--skin-text-lg);
+  font-weight: var(--skin-font-semibold);
+  color: var(--skin-text-primary);
+  margin: 0 0 var(--skin-gap-4) 0;
+  letter-spacing: var(--skin-tracking-tight);
+  line-height: var(--skin-leading-tight);
+}
+
+/* ===== 标签徽章 ===== */
+.skin-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 10px;
+  border-radius: 4px;
+  font-size: var(--skin-text-xs);
+  font-weight: var(--skin-font-medium);
+  letter-spacing: var(--skin-tracking-wide);
+}
+
+.skin-tag-low {
+  background: var(--skin-risk-low-soft);
+  color: var(--skin-risk-low-text);
+}
+
+.skin-tag-mid {
+  background: var(--skin-risk-mid-soft);
+  color: var(--skin-risk-mid-text);
+}
+
+.skin-tag-high {
+  background: var(--skin-risk-high-soft);
+  color: var(--skin-risk-high-text);
+}
+
+.skin-tag-brand {
+  background: var(--skin-brand-soft);
+  color: var(--skin-brand);
+}
+
+/* ===== 分隔线 ===== */
+.skin-divider {
+  border: none;
+  border-top: 1px solid var(--skin-border);
+  margin: var(--skin-gap-6) 0;
+}

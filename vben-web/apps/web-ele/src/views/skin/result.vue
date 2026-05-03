@@ -1,19 +1,48 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
+import { use } from 'echarts/core';
+import { CanvasRenderer } from 'echarts/renderers';
+import { PieChart, BarChart } from 'echarts/charts';
+import {
+  GridComponent,
+  TooltipComponent,
+  LegendComponent,
+} from 'echarts/components';
+import VChart from 'vue-echarts';
+import SkinKgPathGraph, {
+  type SkinGraphLink,
+  type SkinGraphNode,
+} from './components/SkinKgPathGraph.vue';
 import {
   ArrowLeft,
   Phone,
   FileText,
   AlertTriangle,
   MapPin,
-  ChevronRight,
   Activity,
   Eye,
   Layers,
   CircleDot,
 } from 'lucide-vue-next';
 import '../skin/styles/token.css';
+
+use([
+  CanvasRenderer,
+  PieChart,
+  BarChart,
+  GridComponent,
+  TooltipComponent,
+  LegendComponent,
+]);
+
+/** 图表配色：与 token 品牌 / 中性色一致 */
+const chartPalette = ['#2C7A7B', '#57534E', '#A8A29E', '#78716C', '#D6D3D1'];
+
+function truncateLabel(text: string, max = 14) {
+  if (text.length <= max) return text;
+  return `${text.slice(0, max - 1)}…`;
+}
 
 const route = useRoute();
 const router = useRouter();
@@ -68,7 +97,20 @@ const result = ref({
     { id: 'd2', label: '接触性皮炎', type: 'disease' },
     { id: 'k1', label: '炎症反应', type: 'knowledge' },
     { id: 'k2', label: '免疫相关', type: 'knowledge' },
-  ],
+    { id: 'k3', label: '遗传因素', type: 'knowledge' },
+  ] satisfies SkinGraphNode[],
+  graphEdges: [
+    { source: 'root', target: 'f1' },
+    { source: 'root', target: 'f2' },
+    { source: 'root', target: 'f3' },
+    { source: 'f1', target: 'd1' },
+    { source: 'f2', target: 'd1' },
+    { source: 'f3', target: 'd2' },
+    { source: 'd1', target: 'k1' },
+    { source: 'd1', target: 'k2' },
+    { source: 'd2', target: 'k2' },
+    { source: 'd2', target: 'k3' },
+  ] satisfies SkinGraphLink[],
 });
 
 const riskConfig = computed(() => ({
@@ -91,6 +133,186 @@ const riskConfig = computed(() => ({
     textColor: 'var(--skin-risk-high-text)',
   },
 }[result.value.riskLevel]));
+
+const topCandidate = computed(
+  () =>
+    result.value.candidates.find((c) => c.isTop) ?? result.value.candidates[0],
+);
+
+const graphCaption = computed(() => {
+  const n = result.value.graphNodes.length;
+  const e = result.value.graphEdges.length;
+  return `基于皮肤病知识图谱 · GraphRAG 推理子图 · ${n} 个节点 · ${e} 条关联`;
+});
+
+const donutChartOption = computed(() => {
+  const list = result.value.candidates;
+  const top = topCandidate.value;
+  return {
+    color: chartPalette,
+    tooltip: {
+      trigger: 'item',
+      confine: true,
+      backgroundColor: 'rgba(28, 25, 23, 0.92)',
+      borderWidth: 0,
+      textStyle: { color: '#FAFAF9', fontSize: 12 },
+      formatter: (p: { name?: string; value?: number; data?: { desc?: string } }) => {
+        const name = p.name ?? '';
+        const val = typeof p.value === 'number' ? p.value : Number(p.value);
+        const desc = p.data?.desc;
+        const extra = desc
+          ? `<div style="margin-top:6px;max-width:220px;line-height:1.45;opacity:.88;font-size:11px">${desc}</div>`
+          : '';
+        return `<div style="font-weight:600">${name}</div><div>参考概率 ${val}%</div>${extra}`;
+      },
+    },
+    legend: {
+      type: 'scroll',
+      bottom: 0,
+      left: 'center',
+      itemWidth: 10,
+      itemHeight: 10,
+      textStyle: { color: '#57534E', fontSize: 11 },
+      formatter: (name: string) => truncateLabel(name, 16),
+    },
+    title: top
+      ? {
+          text: `${top.confidence}%`,
+          subtext: truncateLabel(top.name, 18),
+          left: 'center',
+          top: '38%',
+          textAlign: 'center',
+          textStyle: {
+            fontSize: 26,
+            fontWeight: 700,
+            color: '#2C7A7B',
+            fontFamily:
+              'ui-sans-serif, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif',
+          },
+          subtextStyle: {
+            fontSize: 12,
+            color: '#57534E',
+            lineHeight: 18,
+            width: 160,
+            overflow: 'truncate',
+            fontFamily:
+              'ui-sans-serif, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif',
+          },
+        }
+      : undefined,
+    series: [
+      {
+        type: 'pie',
+        radius: ['46%', '68%'],
+        center: ['50%', '42%'],
+        animationDuration: 720,
+        animationEasing: 'cubicOut',
+        avoidLabelOverlap: true,
+        itemStyle: {
+          borderRadius: 6,
+          borderColor: '#FFFFFF',
+          borderWidth: 2,
+        },
+        label: {
+          show: true,
+          formatter: '{d}%',
+          color: '#1C1917',
+          fontSize: 11,
+          fontWeight: 600,
+        },
+        labelLine: { length: 8, length2: 6, smooth: true },
+        emphasis: {
+          scale: true,
+          scaleSize: 4,
+          itemStyle: { shadowBlur: 12, shadowColor: 'rgba(44, 122, 123, 0.25)' },
+        },
+        data: list.map((c, i) => ({
+          name: c.name,
+          value: c.confidence,
+          desc: c.description,
+          itemStyle: { color: chartPalette[i % chartPalette.length] },
+        })),
+      },
+    ],
+  };
+});
+
+const barChartOption = computed(() => {
+  const list = [...result.value.candidates].sort(
+    (a, b) => b.confidence - a.confidence,
+  );
+  return {
+    color: chartPalette,
+    grid: {
+      left: 4,
+      right: 36,
+      top: 8,
+      bottom: 8,
+      containLabel: true,
+    },
+    tooltip: {
+      trigger: 'axis',
+      axisPointer: { type: 'shadow' },
+      confine: true,
+      backgroundColor: 'rgba(28, 25, 23, 0.92)',
+      borderWidth: 0,
+      textStyle: { color: '#FAFAF9', fontSize: 12 },
+      formatter: (params: unknown) => {
+        const arr = Array.isArray(params) ? params : [params];
+        const first = arr[0] as {
+          name?: string;
+          value?: number;
+          dataIndex?: number;
+        };
+        const idx = first?.dataIndex ?? 0;
+        const row = list[idx];
+        if (!row) return '';
+        return `<div style="font-weight:600">${row.name}</div><div>${row.confidence}%</div><div style="margin-top:6px;max-width:240px;line-height:1.45;opacity:.88;font-size:11px">${row.description}</div>`;
+      },
+    },
+    xAxis: {
+      type: 'value',
+      max: 100,
+      axisLabel: {
+        formatter: '{value}%',
+        color: '#A8A29E',
+        fontSize: 10,
+      },
+      splitLine: {
+        lineStyle: { type: 'dashed', color: '#F5F5F4' },
+      },
+      axisLine: { show: false },
+      axisTick: { show: false },
+    },
+    yAxis: {
+      type: 'category',
+      inverse: true,
+      data: list.map((c) => truncateLabel(c.name, 12)),
+      axisLabel: { color: '#57534E', fontSize: 11, width: 100, overflow: 'truncate' },
+      axisLine: { show: false },
+      axisTick: { show: false },
+    },
+    series: [
+      {
+        type: 'bar',
+        animationDuration: 640,
+        animationEasing: 'cubicOut',
+        data: list.map((c, i) => ({
+          value: c.confidence,
+          itemStyle: {
+            color: chartPalette[i % chartPalette.length],
+            borderRadius: [0, 6, 6, 0],
+          },
+        })),
+        barMaxWidth: 18,
+        emphasis: {
+          focus: 'series',
+          itemStyle: { shadowBlur: 8, shadowColor: 'rgba(0,0,0,0.08)' },
+        },
+      },
+    ],
+  };
+});
 
 function goToReport() {
   router.push(`/skin/report/${sessionId.value}`);
@@ -189,39 +411,40 @@ onMounted(() => {
         </div>
       </section>
 
-      <!-- ③ AI 评估（候选诊断）-->
-      <section class="section">
+      <!-- ③ AI 评估（候选诊断 · ECharts）-->
+      <section class="section section-candidates">
         <p class="skin-section-label">AI 评估</p>
+        <p class="candidate-section-lead">
+          以下为模型输出的<strong>候选病种与参考概率</strong>，环形图为分布占比，条形图便于横向对比。
+        </p>
 
-        <div class="candidate-list">
-          <div
-            v-for="(c, idx) in result.candidates"
-            :key="c.name"
-            class="candidate-item"
-            :class="{ 'candidate-item-top': c.isTop }"
-          >
-            <div class="candidate-header">
-              <div class="candidate-left">
-                <span class="candidate-rank">#{{ idx + 1 }}</span>
-                <div>
-                  <p class="candidate-name">{{ c.name }}</p>
-                  <p class="candidate-desc">{{ c.description }}</p>
-                </div>
-              </div>
-              <span class="candidate-pct skin-numeric">
-                {{ c.confidence }}%
-              </span>
+        <div class="candidate-charts-card skin-card">
+          <div class="candidate-chart-block">
+            <div class="candidate-chart-head">
+              <span class="candidate-chart-title">概率分布</span>
+              <span class="candidate-chart-sub">环形图 · 合计 100%</span>
             </div>
-            <!-- 置信度条 -->
-            <div class="conf-track">
-              <div
-                class="conf-fill"
-                :style="{
-                  width: `${c.confidence}%`,
-                  background: c.isTop
-                    ? 'var(--skin-brand)'
-                    : 'var(--skin-border)',
-                }"
+            <div class="candidate-donut-wrap">
+              <VChart
+                class="candidate-echart"
+                :option="donutChartOption"
+                autoresize
+              />
+            </div>
+          </div>
+
+          <div class="candidate-chart-divider" />
+
+          <div class="candidate-chart-block">
+            <div class="candidate-chart-head">
+              <span class="candidate-chart-title">置信度对比</span>
+              <span class="candidate-chart-sub">横向条形图 · 由高到低</span>
+            </div>
+            <div class="candidate-bar-wrap">
+              <VChart
+                class="candidate-echart candidate-echart--bar"
+                :option="barChartOption"
+                autoresize
               />
             </div>
           </div>
@@ -233,75 +456,26 @@ onMounted(() => {
         </p>
       </section>
 
-      <!-- ④ 知识图谱推理路径 -->
-      <section class="section">
+      <!-- ④ 知识图谱推理路径（force-graph 可交互子图）-->
+      <section class="section section-graph">
         <p class="skin-section-label">推理依据</p>
+        <p class="graph-section-lead">
+          从<strong>影像特征</strong>到<strong>候选病种</strong>再到<strong>知识概念</strong>的可解释子图，
+          自上而下为 GraphRAG 常用推理方向（示意数据）。
+        </p>
         <div class="graph-card skin-card">
           <div class="graph-legend">
-            <span class="legend-dot legend-root" />图像特征
+            <span class="legend-dot legend-root" />皮损 / 根节点
+            <span class="legend-dot legend-feature" style="margin-left:12px" />影像特征
             <span class="legend-dot legend-disease" style="margin-left:12px" />关联病种
             <span class="legend-dot legend-knowledge" style="margin-left:12px" />知识节点
           </div>
-          <!-- 知识图谱 SVG 可视化 -->
-          <div class="graph-svg-wrap">
-            <svg viewBox="0 0 320 220" class="graph-svg">
-              <!-- 连线（先画线，在节点下方）-->
-              <!-- 中心 → 特征 -->
-              <line x1="160" y1="50" x2="60" y2="110" stroke="#E7E5E4" stroke-width="1.5"/>
-              <line x1="160" y1="50" x2="160" y2="110" stroke="#E7E5E4" stroke-width="1.5"/>
-              <line x1="160" y1="50" x2="260" y2="110" stroke="#E7E5E4" stroke-width="1.5"/>
-              <!-- 特征 → 疾病 -->
-              <line x1="60" y1="110" x2="110" y2="170" stroke="#E7E5E4" stroke-width="1.5"/>
-              <line x1="160" y1="110" x2="110" y2="170" stroke="#E7E5E4" stroke-width="1.5"/>
-              <line x1="260" y1="110" x2="210" y2="170" stroke="#E7E5E4" stroke-width="1.5"/>
-              <!-- 疾病 → 知识 -->
-              <line x1="110" y1="170" x2="70" y2="210" stroke="#E7E5E4" stroke-width="1.5" stroke-dasharray="4 2"/>
-              <line x1="110" y1="170" x2="150" y2="210" stroke="#E7E5E4" stroke-width="1.5" stroke-dasharray="4 2"/>
-              <line x1="210" y1="170" x2="250" y2="210" stroke="#E7E5E4" stroke-width="1.5" stroke-dasharray="4 2"/>
-
-              <!-- 根节点（皮损图像）-->
-              <circle cx="160" cy="50" r="22" fill="var(--skin-brand)" />
-              <text x="160" y="46" text-anchor="middle" fill="white" font-size="9" font-weight="600">皮损</text>
-              <text x="160" y="57" text-anchor="middle" fill="white" font-size="9" font-weight="600">图像</text>
-
-              <!-- 特征节点 -->
-              <circle cx="60" cy="110" r="18" fill="white" stroke="var(--skin-brand)" stroke-width="1.5"/>
-              <text x="60" y="107" text-anchor="middle" fill="var(--skin-brand)" font-size="8">颜色</text>
-              <text x="60" y="117" text-anchor="middle" fill="var(--skin-brand)" font-size="8">异常</text>
-
-              <circle cx="160" cy="110" r="18" fill="white" stroke="var(--skin-brand)" stroke-width="1.5"/>
-              <text x="160" y="107" text-anchor="middle" fill="var(--skin-brand)" font-size="8">边缘</text>
-              <text x="160" y="117" text-anchor="middle" fill="var(--skin-brand)" font-size="8">不规则</text>
-
-              <circle cx="260" cy="110" r="18" fill="white" stroke="var(--skin-brand)" stroke-width="1.5"/>
-              <text x="260" y="107" text-anchor="middle" fill="var(--skin-brand)" font-size="8">斑片</text>
-              <text x="260" y="117" text-anchor="middle" fill="var(--skin-brand)" font-size="8">形态</text>
-
-              <!-- 疾病节点 -->
-              <rect x="80" y="155" width="60" height="28" rx="6" fill="#1C1917"/>
-              <text x="110" y="165" text-anchor="middle" fill="white" font-size="8" font-weight="600">湿疹</text>
-              <text x="110" y="175" text-anchor="middle" fill="white" font-size="7">65%</text>
-
-              <rect x="180" y="155" width="60" height="28" rx="6" fill="var(--skin-surface-soft)" stroke="var(--skin-border)" stroke-width="1"/>
-              <text x="210" y="165" text-anchor="middle" fill="var(--skin-text-secondary)" font-size="7.5">接触性</text>
-              <text x="210" y="175" text-anchor="middle" fill="var(--skin-text-tertiary)" font-size="7">皮炎 22%</text>
-
-              <!-- 知识节点（虚线连接）-->
-              <circle cx="70" cy="210" r="14" fill="var(--skin-surface-soft)" stroke="var(--skin-border)" stroke-width="1" stroke-dasharray="3 2"/>
-              <text x="70" y="207" text-anchor="middle" fill="var(--skin-text-tertiary)" font-size="7">炎症</text>
-              <text x="70" y="215" text-anchor="middle" fill="var(--skin-text-tertiary)" font-size="7">反应</text>
-
-              <circle cx="150" cy="210" r="14" fill="var(--skin-surface-soft)" stroke="var(--skin-border)" stroke-width="1" stroke-dasharray="3 2"/>
-              <text x="150" y="207" text-anchor="middle" fill="var(--skin-text-tertiary)" font-size="7">免疫</text>
-              <text x="150" y="215" text-anchor="middle" fill="var(--skin-text-tertiary)" font-size="7">相关</text>
-
-              <circle cx="250" cy="210" r="14" fill="var(--skin-surface-soft)" stroke="var(--skin-border)" stroke-width="1" stroke-dasharray="3 2"/>
-              <text x="250" y="207" text-anchor="middle" fill="var(--skin-text-tertiary)" font-size="7">遗传</text>
-              <text x="250" y="215" text-anchor="middle" fill="var(--skin-text-tertiary)" font-size="7">因素</text>
-            </svg>
-          </div>
+          <SkinKgPathGraph
+            :nodes="result.graphNodes"
+            :links="result.graphEdges"
+          />
           <p class="graph-caption">
-            基于皮肤病知识图谱 · GraphRAG 推理 · 匹配 12 个知识节点
+            {{ graphCaption }}
           </p>
         </div>
       </section>
@@ -540,86 +714,73 @@ onMounted(() => {
   flex: 1;
 }
 
-/* ③ 候选诊断 */
-.candidate-list {
-  display: flex;
-  flex-direction: column;
-  gap: var(--skin-gap-2);
+/* ③ 候选诊断 · 图表 */
+.section-candidates .skin-section-label {
+  margin-bottom: var(--skin-gap-2);
 }
 
-.candidate-item {
-  background: var(--skin-surface);
-  border: 1px solid var(--skin-border);
-  border-radius: var(--skin-radius-lg);
-  padding: var(--skin-gap-4) var(--skin-gap-4) var(--skin-gap-3);
-}
-
-.candidate-item-top {
-  border-color: var(--skin-brand);
-  background: var(--skin-brand-50);
-}
-
-.candidate-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: var(--skin-gap-3);
-}
-
-.candidate-left {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-}
-
-.candidate-rank {
-  font-size: var(--skin-text-xs);
-  font-weight: var(--skin-font-bold);
-  color: var(--skin-brand);
-  background: var(--skin-surface);
-  padding: 2px 6px;
-  border-radius: 4px;
-  border: 1px solid var(--skin-brand-100);
-  flex-shrink: 0;
-  margin-top: 2px;
-  font-variant-numeric: tabular-nums;
-}
-
-.candidate-name {
-  font-size: var(--skin-text-base);
-  font-weight: var(--skin-font-semibold);
-  color: var(--skin-text-primary);
-  margin: 0 0 2px 0;
-  letter-spacing: var(--skin-tracking-tight);
-}
-
-.candidate-desc {
+.candidate-section-lead {
   font-size: var(--skin-text-xs);
   color: var(--skin-text-tertiary);
-  margin: 0;
-  line-height: 1.5;
+  line-height: var(--skin-leading-relaxed);
+  margin: 0 0 var(--skin-gap-4) 0;
 }
 
-.candidate-pct {
-  font-size: var(--skin-text-xl);
-  font-weight: var(--skin-font-bold);
-  color: var(--skin-brand);
-  flex-shrink: 0;
-  letter-spacing: var(--skin-tracking-tight);
-}
-
-.conf-track {
-  height: 4px;
-  background: var(--skin-border);
-  border-radius: 2px;
+.candidate-charts-card {
+  padding: var(--skin-gap-4);
   overflow: hidden;
 }
 
-.conf-fill {
+.candidate-chart-block {
+  margin: 0;
+}
+
+.candidate-chart-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--skin-gap-3);
+  margin-bottom: var(--skin-gap-2);
+}
+
+.candidate-chart-title {
+  font-size: var(--skin-text-sm);
+  font-weight: var(--skin-font-semibold);
+  color: var(--skin-text-primary);
+  letter-spacing: var(--skin-tracking-tight);
+}
+
+.candidate-chart-sub {
+  font-size: var(--skin-text-xs);
+  color: var(--skin-text-muted);
+  flex-shrink: 0;
+}
+
+.candidate-donut-wrap {
+  width: 100%;
+  height: min(52vw, 280px);
+  min-height: 240px;
+}
+
+.candidate-bar-wrap {
+  width: 100%;
+  height: 168px;
+  min-height: 140px;
+}
+
+.candidate-echart {
+  width: 100%;
   height: 100%;
-  border-radius: 2px;
-  transition: width 0.8s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.candidate-echart--bar {
+  min-height: 140px;
+}
+
+.candidate-chart-divider {
+  height: 1px;
+  background: var(--skin-border-soft);
+  margin: var(--skin-gap-4) 0;
 }
 
 .notice-text {
@@ -632,13 +793,25 @@ onMounted(() => {
   text-align: center;
 }
 
-/* ④ 知识图谱 */
+/* ④ 知识图谱（force-graph）*/
+.section-graph .skin-section-label {
+  margin-bottom: var(--skin-gap-2);
+}
+
+.graph-section-lead {
+  font-size: var(--skin-text-xs);
+  color: var(--skin-text-tertiary);
+  line-height: var(--skin-leading-relaxed);
+  margin: 0 0 var(--skin-gap-4) 0;
+}
+
 .graph-card {
   padding: var(--skin-gap-4);
 }
 
 .graph-legend {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 6px;
   font-size: var(--skin-text-xs);
@@ -657,6 +830,11 @@ onMounted(() => {
   background: var(--skin-brand);
 }
 
+.legend-feature {
+  background: #99f6e4;
+  border: 1px solid var(--skin-brand);
+}
+
 .legend-disease {
   background: var(--skin-text-primary);
 }
@@ -666,24 +844,11 @@ onMounted(() => {
   border: 1px solid var(--skin-text-muted);
 }
 
-.graph-svg-wrap {
-  border-radius: var(--skin-radius-md);
-  background: var(--skin-bg);
-  overflow: hidden;
-  border: 1px solid var(--skin-border-soft);
-}
-
-.graph-svg {
-  width: 100%;
-  height: auto;
-  display: block;
-}
-
 .graph-caption {
   font-size: var(--skin-text-xs);
   color: var(--skin-text-muted);
   text-align: center;
-  margin: var(--skin-gap-3) 0 0 0;
+  margin: var(--skin-gap-4) 0 0 0;
 }
 
 /* ⑤ 医院 */
